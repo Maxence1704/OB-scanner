@@ -2,30 +2,29 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
+from streamlit_lightweight_charts import renderLightweightCharts
+import json
 
-# --- CONFIGURATION DE LA PAGE ---
+# --- CONFIGURATION STREAMLIT ---
 st.set_page_config(
-    page_title="Terminal SMC | Order Block Scanner",
+    page_title="Terminal SMC | Trade Republic Style",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# --- STYLE TRADE REPUBLIC (NOIR PUR & MINIMALISTE) ---
+# --- STYLE TRADE REPUBLIC (NOIR PUR & MINIMALISME) ---
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
 
     html, body, [class*="css"] {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-family: 'Inter', -apple-system, sans-serif;
     }
-
     .stApp {
         background-color: #000000;
         color: #ffffff;
     }
-
     .tr-asset-name {
         font-size: 0.9rem;
         font-weight: 500;
@@ -43,16 +42,15 @@ st.markdown("""
     .tr-variation {
         font-size: 0.95rem;
         font-weight: 600;
-        margin-top: 6px;
-        margin-bottom: 20px;
+        margin-top: 4px;
+        margin-bottom: 18px;
     }
-
     .tr-card {
         background: #09090b;
         border: 1px solid #18181b;
         border-radius: 12px;
         padding: 16px 20px;
-        margin-bottom: 12px;
+        margin-top: 14px;
     }
     .tr-card-header {
         font-size: 0.75rem;
@@ -62,44 +60,24 @@ st.markdown("""
         color: #71717a;
         margin-bottom: 8px;
     }
-
     .badge-bull {
-        background: rgba(16, 185, 129, 0.12);
+        background: rgba(16, 185, 129, 0.15);
         color: #10b981;
-        border: 1px solid rgba(16, 185, 129, 0.3);
-        padding: 4px 8px;
+        border: 1px solid rgba(16, 185, 129, 0.35);
+        padding: 3px 8px;
         border-radius: 6px;
         font-size: 0.75rem;
         font-weight: 600;
     }
     .badge-bear {
-        background: rgba(244, 63, 94, 0.12);
+        background: rgba(244, 63, 94, 0.15);
         color: #f43f5e;
-        border: 1px solid rgba(244, 63, 94, 0.3);
-        padding: 4px 8px;
+        border: 1px solid rgba(244, 63, 94, 0.35);
+        padding: 3px 8px;
         border-radius: 6px;
         font-size: 0.75rem;
         font-weight: 600;
     }
-    .badge-tested {
-        background: rgba(245, 158, 11, 0.15);
-        color: #f59e0b;
-        border: 1px solid rgba(245, 158, 11, 0.3);
-        padding: 3px 6px;
-        border-radius: 5px;
-        font-size: 0.7rem;
-        font-weight: 600;
-    }
-    .badge-clean {
-        background: rgba(59, 130, 246, 0.12);
-        color: #60a5fa;
-        border: 1px solid rgba(59, 130, 246, 0.25);
-        padding: 3px 6px;
-        border-radius: 5px;
-        font-size: 0.7rem;
-        font-weight: 600;
-    }
-
     div[data-baseweb="select"] > div {
         background-color: #09090b !important;
         border: 1px solid #27272a !important;
@@ -109,24 +87,24 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- SÉLECTEURS DE MARCHÉ ---
-col_sel1, col_sel2, col_sel3 = st.columns([2, 1, 1])
+# --- SÉLECTEURS DE CONTRÔLE ---
+c_sel1, c_sel2, c_sel3 = st.columns([2, 1, 1])
 
-with col_sel1:
+with c_sel1:
     asset_label = st.selectbox(
         "Marché",
-        ["EUR/USD (Forex)", "BTC/USD (Crypto)", "XAU/USD (Or)", "NASDAQ 100"],
+        ["EUR/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XAU/USD (Or)", "XAG/USD (Argent)", "NASDAQ 100"],
         index=0,
         label_visibility="collapsed"
     )
-with col_sel2:
+with c_sel2:
     timeframe = st.selectbox(
         "Horizon",
         ["1m", "5m", "15m", "1h", "4h"],
         index=1,
         label_visibility="collapsed"
     )
-with col_sel3:
+with c_sel3:
     period_options = ["1d", "5d", "7d"] if timeframe == "1m" else ["5d", "1mo", "60d"]
     period = st.selectbox(
         "Historique",
@@ -136,16 +114,19 @@ with col_sel3:
     )
 
 ticker_map = {
-    "EUR/USD (Forex)": "EURUSD=X",
-    "BTC/USD (Crypto)": "BTC-USD",
+    "EUR/USD": "EURUSD=X",
+    "BTC/USD": "BTC-USD",
+    "ETH/USD": "ETH-USD",
+    "SOL/USD": "SOL-USD",
     "XAU/USD (Or)": "GC=F",
+    "XAG/USD (Argent)": "SI=F",
     "NASDAQ 100": "NQ=F"
 }
 selected_symbol = ticker_map[asset_label]
 
-# --- CHARGEMENT DU FLUX ---
-@st.cache_data(ttl=30, show_spinner=False)
-def get_market_data(symbol, interval, lookback):
+# --- CHARGEMENT DU FLUX DE MARCHÉ ---
+@st.cache_data(ttl=20, show_spinner=False)
+def load_market_data(symbol, interval, lookback):
     try:
         df = yf.download(symbol, period=lookback, interval=interval, progress=False)
         if df.empty:
@@ -157,142 +138,125 @@ def get_market_data(symbol, interval, lookback):
     except Exception:
         return None
 
-df = get_market_data(selected_symbol, timeframe, period)
+df = load_market_data(selected_symbol, timeframe, period)
 
 if df is None or len(df) < 30:
     st.error("Données de cotation indisponibles. Réessaie avec un autre horizon.")
     st.stop()
 
-# --- MOTEUR DE DÉTECTION SMC CORRIGÉ SANS PARASITES ---
-def detect_order_blocks_strict(data, swing_length=7, post_touch_limit=10):
+# --- ALGORITHME CALIBRÉ SUR TES CAPTURES TRADINGVIEW ---
+def scan_institutional_order_blocks(data, post_touch_limit=10):
     obs = []
     n = len(data)
     highs = data['High'].values
     lows = data['Low'].values
     closes = data['Close'].values
     opens = data['Open'].values
+    times = data.index
 
-    # Volatilité ATR 14
+    # Calcul ATR
     tr = np.maximum(highs - lows, np.maximum(np.abs(highs - np.roll(closes, 1)), np.abs(lows - np.roll(closes, 1))))
     atr = pd.Series(tr).rolling(14).mean().bfill().values
 
-    for i in range(swing_length, n - 3):
-        # 1. BEARISH OB (SOMMET RÉEL AVANT LA DESCENTE)
-        # Exige un sommet relatif réel : pas une simple pause en plein milieu d'une chute
-        is_swing_high = (highs[i] >= np.max(highs[max(0, i - swing_length):i])) and \
-                        (highs[i] > np.max(highs[i + 1:min(n, i + 3)]))
+    # Balayage des structures
+    for i in range(5, n - 4):
+        # 1. ZONE ACHAT (DEMAND ZONE) - Modèle EURUSD / BTC / XAU / XAG
+        # Détection d'une impulsion puissante sur 1 à 3 bougies consécutives
+        move_up = closes[i+1] - opens[i]
+        is_expansion_bull = move_up > (1.8 * atr[i])
+        
+        # Cassure nette du plus haut des 12 bougies précédentes (BOS)
+        prior_peak = np.max(highs[max(0, i - 12):i])
+        has_bos_bull = (closes[i] > prior_peak) or (closes[i+1] > prior_peak)
+        
+        # FVG haussier obligatoire
+        has_fvg_bull = lows[min(i + 2, n - 1)] > highs[i - 1]
 
-        if is_swing_high:
-            # Cherche la dernière bougie verte au sommet
-            target_idx = None
-            for k in range(i, max(0, i - 3), -1):
-                if closes[k] >= opens[k]:
-                    target_idx = k
-                    break
-            if target_idx is None:
-                target_idx = i
+        if is_expansion_bull and has_bos_bull and has_fvg_bull:
+            # Base de l'OB : la bougie ou consolidation juste avant l'envol
+            base_idx = i - 1
+            ob_high = float(max(highs[base_idx], opens[i]))
+            ob_low = float(min(lows[base_idx], lows[i]))
 
-            ob_high = float(highs[target_idx])
-            ob_low = float(lows[target_idx])
+            future_lows = lows[i+2:]
+            future_closes = closes[i+2:]
 
-            # Impulsion baissière immédiate
-            impulse_idx = min(target_idx + 1, n - 1)
-            body_bear = opens[impulse_idx] - closes[impulse_idx]
-            is_impulsive = body_bear >= (1.1 * atr[impulse_idx])
+            # Invalidation par clôture sous la zone
+            broken = np.any(future_closes < ob_low) if len(future_closes) > 0 else False
             
-            # Cassure du creux précédent (BOS)
-            prior_low = np.min(lows[max(0, target_idx - swing_length):target_idx])
-            has_bos = closes[impulse_idx] < prior_low or closes[min(impulse_idx + 1, n - 1)] < prior_low
-            
-            # FVG baissier net
-            has_fvg = (impulse_idx + 1 < n) and (highs[impulse_idx + 1] < ob_low)
-
-            if is_impulsive and has_bos and has_fvg:
-                future_highs = highs[impulse_idx + 1:]
-                future_closes = closes[impulse_idx + 1:]
-
-                broken = np.any(future_closes > ob_high) if len(future_closes) > 0 else False
-                touch_idx = None
-                for idx, h in enumerate(future_highs):
-                    if h >= ob_low:
-                        touch_idx = idx
-                        break
-
-                show_zone = not broken
-                tested = False
-                if touch_idx is not None:
-                    tested = True
-                    if (len(future_highs) - 1 - touch_idx) > post_touch_limit:
-                        show_zone = False
-
-                if show_zone:
-                    obs.append({
-                        "type": "BEARISH OB",
-                        "high": ob_high,
-                        "low": ob_low,
-                        "start_idx": target_idx,
-                        "tested": tested,
-                        "border": "rgba(244, 63, 94, 0.9)",
-                        "fill": "rgba(244, 63, 94, 0.16)"
-                    })
-
-        # 2. BULLISH OB (CREUX RÉEL DU MARCHÉ)
-        is_swing_low = (lows[i] <= np.min(lows[max(0, i - swing_length):i])) and \
-                       (lows[i] < np.min(lows[i + 1:min(n, i + 3)]))
-
-        if is_swing_low:
-            # Dernière bougie rouge au creux
-            target_idx = None
-            for k in range(i, max(0, i - 3), -1):
-                if closes[k] <= opens[k]:
-                    target_idx = k
+            # Gestion du test de la zone
+            touch_idx = None
+            for idx, l in enumerate(future_lows):
+                if l <= ob_high:
+                    touch_idx = idx
                     break
-            if target_idx is None:
-                target_idx = i
 
-            ob_high = float(highs[target_idx])
-            ob_low = float(lows[target_idx])
+            show_zone = not broken
+            tested = False
+            if touch_idx is not None:
+                tested = True
+                if (len(future_lows) - 1 - touch_idx) > post_touch_limit:
+                    show_zone = False
 
-            # Impulsion haussière
-            impulse_idx = min(target_idx + 1, n - 1)
-            body_bull = closes[impulse_idx] - opens[impulse_idx]
-            is_impulsive = body_bull >= (1.1 * atr[impulse_idx])
+            if show_zone:
+                obs.append({
+                    "type": "ZONE ACHAT",
+                    "high": ob_high,
+                    "low": ob_low,
+                    "start_time": int(times[base_idx].timestamp()),
+                    "start_idx": base_idx,
+                    "tested": tested,
+                    "color": "rgba(16, 185, 129, 0.22)",
+                    "border": "#10b981"
+                })
 
-            prior_high = np.max(highs[max(0, target_idx - swing_length):target_idx])
-            has_bos = closes[impulse_idx] > prior_high or closes[min(impulse_idx + 1, n - 1)] > prior_high
+        # 2. ZONE VENTE (SUPPLY ZONE) - Modèle ETH / SOL
+        move_down = opens[i] - closes[i+1]
+        is_expansion_bear = move_down > (1.8 * atr[i])
+        
+        # Cassure nette du creux des 12 bougies précédentes (BOS)
+        prior_valley = np.min(lows[max(0, i - 12):i])
+        has_bos_bear = (closes[i] < prior_valley) or (closes[i+1] < prior_valley)
+        
+        # FVG baissier obligatoire
+        has_fvg_bear = highs[min(i + 2, n - 1)] < lows[i - 1]
 
-            has_fvg = (impulse_idx + 1 < n) and (lows[impulse_idx + 1] > ob_high)
+        if is_expansion_bear and has_bos_bear and has_fvg_bear:
+            base_idx = i - 1
+            ob_high = float(max(highs[base_idx], highs[i]))
+            ob_low = float(min(lows[base_idx], opens[i]))
 
-            if is_impulsive and has_bos and has_fvg:
-                future_lows = lows[impulse_idx + 1:]
-                future_closes = closes[impulse_idx + 1:]
+            future_highs = highs[i+2:]
+            future_closes = closes[i+2:]
 
-                broken = np.any(future_closes < ob_low) if len(future_closes) > 0 else False
-                touch_idx = None
-                for idx, l in enumerate(future_lows):
-                    if l <= ob_high:
-                        touch_idx = idx
-                        break
+            broken = np.any(future_closes > ob_high) if len(future_closes) > 0 else False
+            
+            touch_idx = None
+            for idx, h in enumerate(future_highs):
+                if h >= ob_low:
+                    touch_idx = idx
+                    break
 
-                show_zone = not broken
-                tested = False
-                if touch_idx is not None:
-                    tested = True
-                    if (len(future_lows) - 1 - touch_idx) > post_touch_limit:
-                        show_zone = False
+            show_zone = not broken
+            tested = False
+            if touch_idx is not None:
+                tested = True
+                if (len(future_highs) - 1 - touch_idx) > post_touch_limit:
+                    show_zone = False
 
-                if show_zone:
-                    obs.append({
-                        "type": "BULLISH OB",
-                        "high": ob_high,
-                        "low": ob_low,
-                        "start_idx": target_idx,
-                        "tested": tested,
-                        "border": "rgba(16, 185, 129, 0.9)",
-                        "fill": "rgba(16, 185, 129, 0.16)"
-                    })
+            if show_zone:
+                obs.append({
+                    "type": "ZONE VENTE",
+                    "high": ob_high,
+                    "low": ob_low,
+                    "start_time": int(times[base_idx].timestamp()),
+                    "start_idx": base_idx,
+                    "tested": tested,
+                    "color": "rgba(244, 63, 94, 0.22)",
+                    "border": "#f43f5e"
+                })
 
-    # Dédoublonnage pour éviter la superposition de niveaux proches
+    # Dédoublonnage pour éviter les boîtes empilées
     unique = []
     seen = set()
     for o in reversed(obs):
@@ -302,7 +266,7 @@ def detect_order_blocks_strict(data, swing_length=7, post_touch_limit=10):
             unique.append(o)
     return list(reversed(unique))
 
-zones = detect_order_blocks_strict(df, swing_length=7, post_touch_limit=10)
+zones = scan_institutional_order_blocks(df, post_touch_limit=10)
 
 # --- STATISTIQUES TRADE REPUBLIC ---
 last_price = float(df['Close'].iloc[-1])
@@ -325,140 +289,120 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- GRAPHIQUE PLEIN ÉCRAN TRADINGVIEW STYLE ---
-total_bars = len(df)
-df_plot = df.copy()
-df_plot['x_idx'] = np.arange(total_bars)
+# --- FORMATAGE POUR LIGHTWEIGHT CHARTS (VRAI TRADINGVIEW) ---
+candles_data = []
+for t, row in df.iterrows():
+    candles_data.append({
+        "time": int(t.timestamp()),
+        "open": float(row['Open']),
+        "high": float(row['High']),
+        "low": float(row['Low']),
+        "close": float(row['Close'])
+    })
 
-fig = go.Figure()
-
-fig.add_trace(go.Candlestick(
-    x=df_plot['x_idx'],
-    open=df_plot['Open'],
-    high=df_plot['High'],
-    low=df_plot['Low'],
-    close=df_plot['Close'],
-    increasing=dict(line=dict(color='#10b981', width=1.2), fillcolor='#10b981'),
-    decreasing=dict(line=dict(color='#f43f5e', width=1.2), fillcolor='#f43f5e'),
-    showlegend=False
-))
-
+# Création des séries de zones horizontales rectangulaires
+extra_series = []
 for z in zones:
-    fig.add_shape(
-        type="rect",
-        x0=z['start_idx'],
-        y0=z['low'],
-        x1=total_bars - 1,
-        y1=z['high'],
-        fillcolor=z['fill'],
-        line=dict(color=z['border'], width=1, dash="dot" if z['tested'] else "solid")
-    )
+    extra_series.append({
+        "type": "Line",
+        "data": [
+            {"time": z["start_time"], "value": z["high"]},
+            {"time": candles_data[-1]["time"], "value": z["high"]}
+        ],
+        "options": {
+            "color": z["border"],
+            "lineWidth": 1,
+            "lineStyle": 2 if z["tested"] else 0
+        }
+    })
+    extra_series.append({
+        "type": "Line",
+        "data": [
+            {"time": z["start_time"], "value": z["low"]},
+            {"time": candles_data[-1]["time"], "value": z["low"]}
+        ],
+        "options": {
+            "color": z["border"],
+            "lineWidth": 1,
+            "lineStyle": 2 if z["tested"] else 0
+        }
+    })
 
-step = max(1, total_bars // 7)
-tick_indices = list(range(0, total_bars, step))
-if tick_indices[-1] != total_bars - 1:
-    tick_indices.append(total_bars - 1)
-
-tick_texts = [
-    df_plot.index[k].strftime('%H:%M') if timeframe in ['1m', '5m', '15m'] 
-    else df_plot.index[k].strftime('%d %b') 
-    for k in tick_indices
-]
-
-default_visible_bars = 90
-initial_x_start = max(0, total_bars - default_visible_bars)
-initial_x_end = total_bars - 1
-
-recent_slice = df_plot.iloc[initial_x_start:]
-y_min = recent_slice['Low'].min()
-y_max = recent_slice['High'].max()
-y_margin = (y_max - y_min) * 0.08
-
-fig.update_layout(
-    template="plotly_dark",
-    plot_bgcolor="#000000",
-    paper_bgcolor="#000000",
-    height=540,
-    margin=dict(l=65, r=20, t=10, b=10),
-    dragmode="pan", # Déplacement à la souris / au doigt
-    xaxis=dict(
-        range=[initial_x_start, initial_x_end],
-        showgrid=False,
-        zeroline=False,
-        showline=False,
-        tickvals=tick_indices,
-        ticktext=tick_texts,
-        tickfont=dict(color='#52525b', size=11),
-        fixedrange=False # Largeur étirable
-    ),
-    yaxis=dict(
-        range=[y_min - y_margin, y_max + y_margin],
-        showgrid=True,
-        gridcolor="#18181b",
-        side="left",
-        zeroline=False,
-        showline=False,
-        tickformat=".5f" if is_forex else ",.2f",
-        tickfont=dict(color='#71717a', size=11),
-        fixedrange=False # Hauteur étirable
-    )
-)
-
-st.plotly_chart(
-    fig, 
-    use_container_width=True, 
-    config={
-        'scrollZoom': True,
-        'displayModeBar': True,
-        # Outils complets pour zoomer/étirer spécifiquement sur X et Y
-        'modeBarButtonsToAdd': ['zoomIn2d', 'zoomOut2d', 'autoScale2d'],
-        'modeBarButtonsToRemove': ['select2d', 'lasso2d']
+chart_options = {
+    "layout": {
+        "backgroundColor": "#000000",
+        "textColor": "#71717a"
+    },
+    "grid": {
+        "vertLines": {"color": "#111318"},
+        "horzLines": {"color": "#111318"}
+    },
+    "crosshair": {
+        "mode": 1
+    },
+    "priceScale": {
+        "borderColor": "#27272a",
+        "scaleMargins": {"top": 0.1, "bottom": 0.1}
+    },
+    "timeScale": {
+        "borderColor": "#27272a",
+        "timeVisible": True,
+        "secondsVisible": False
     }
-)
+}
+
+series_config = [
+    {
+        "type": "Candlestick",
+        "data": candles_data,
+        "options": {
+            "upColor": "#10b981",
+            "downColor": "#f43f5e",
+            "borderUpColor": "#10b981",
+            "borderDownColor": "#f43f5e",
+            "wickUpColor": "#10b981",
+            "wickDownColor": "#f43f5e"
+        }
+    }
+] + extra_series
+
+renderLightweightCharts([{"chart": chart_options, "series": series_config}], height=520)
 
 # --- CARTES DE SURVEILLANCE ---
-c1, c2 = st.columns(2)
-bull_obs = [z for z in zones if z['type'] == "BULLISH OB"]
-bear_obs = [z for z in zones if z['type'] == "BEARISH OB"]
+col1, col2 = st.columns(2)
+bull_obs = [z for z in zones if z['type'] == "ZONE ACHAT"]
+bear_obs = [z for z in zones if z['type'] == "ZONE VENTE"]
 
-with c1:
-    st.markdown("""
-    <div class="tr-card">
-        <div class="tr-card-header">Structure Acheteuse (Demand)</div>
-    """, unsafe_allow_html=True)
+with col1:
+    st.markdown("""<div class="tr-card"><div class="tr-card-header">Structure Acheteuse (Demand)</div>""", unsafe_allow_html=True)
     if bull_obs:
         for ob in reversed(bull_obs[-2:]):
-            status_badge = '<span class="badge-tested">RÉACTION</span>' if ob['tested'] else '<span class="badge-clean">NON TESTÉ</span>'
             st.markdown(f"""
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
-                <span class="badge-bull">BULLISH OB</span>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+                <span class="badge-bull">ZONE ACHAT</span>
                 <span style="font-family:'JetBrains Mono', monospace; font-size:0.9rem; color:#f4f4f5;">
                     {fmt.format(ob['low'])} — {fmt.format(ob['high'])}
                 </span>
-                {status_badge}
+                <span style="font-size:0.75rem; color:#71717a;">{'En test' if ob['tested'] else 'Vierge'}</span>
             </div>
             """, unsafe_allow_html=True)
     else:
-        st.markdown("<div style='color:#52525b; font-size:0.85rem; margin-top:6px;'>Aucun niveau vierge</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#52525b; font-size:0.85rem; margin-top:4px;'>Aucune zone active</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-with c2:
-    st.markdown("""
-    <div class="tr-card">
-        <div class="tr-card-header">Structure Vendeuse (Supply)</div>
-    """, unsafe_allow_html=True)
+with col2:
+    st.markdown("""<div class="tr-card"><div class="tr-card-header">Structure Vendeuse (Supply)</div>""", unsafe_allow_html=True)
     if bear_obs:
         for ob in reversed(bear_obs[-2:]):
-            status_badge = '<span class="badge-tested">RÉACTION</span>' if ob['tested'] else '<span class="badge-clean">NON TESTÉ</span>'
             st.markdown(f"""
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
-                <span class="badge-bear">BEARISH OB</span>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+                <span class="badge-bear">ZONE VENTE</span>
                 <span style="font-family:'JetBrains Mono', monospace; font-size:0.9rem; color:#f4f4f5;">
                     {fmt.format(ob['low'])} — {fmt.format(ob['high'])}
                 </span>
-                {status_badge}
+                <span style="font-size:0.75rem; color:#71717a;">{'En test' if ob['tested'] else 'Vierge'}</span>
             </div>
             """, unsafe_allow_html=True)
     else:
-        st.markdown("<div style='color:#52525b; font-size:0.85rem; margin-top:6px;'>Aucun niveau vierge</div>", unsafe_allow_html=True)
+        st.markdown("<div style='color:#52525b; font-size:0.85rem; margin-top:4px;'>Aucune zone active</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
