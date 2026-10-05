@@ -5,7 +5,7 @@ import numpy as np
 import streamlit.components.v1 as components
 import json
 
-# --- CONFIGURATION STREAMLIT ---
+# --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(
     page_title="Terminal SMC | Trade Republic Style",
     page_icon="⚡",
@@ -33,7 +33,7 @@ st.markdown("""
     }
     .tr-price {
         font-family: 'Inter', sans-serif;
-        font-size: 2.7rem;
+        font-size: 2.6rem;
         font-weight: 800;
         letter-spacing: -0.04em;
         color: #ffffff;
@@ -43,7 +43,7 @@ st.markdown("""
         font-size: 0.95rem;
         font-weight: 600;
         margin-top: 4px;
-        margin-bottom: 18px;
+        margin-bottom: 16px;
     }
     .tr-card {
         background: #09090b;
@@ -87,7 +87,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- SÉLECTEURS DE CONTRÔLE ---
+# --- SÉLECTEURS DE MARCHÉ ---
 c_sel1, c_sel2, c_sel3 = st.columns([2, 1, 1])
 
 with c_sel1:
@@ -134,6 +134,8 @@ def load_market_data(symbol, interval, lookback):
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df = df[['Open', 'High', 'Low', 'Close']].dropna()
+        df = df[~df.index.duplicated(keep='first')]
+        df.sort_index(inplace=True)
         return df
     except Exception:
         return None
@@ -141,10 +143,10 @@ def load_market_data(symbol, interval, lookback):
 df = load_market_data(selected_symbol, timeframe, period)
 
 if df is None or len(df) < 30:
-    st.error("Données de cotation indisponibles. Réessaie avec un autre horizon.")
+    st.error("Données indisponibles. Réessaie avec un autre horizon.")
     st.stop()
 
-# --- MOTEUR DE DÉTECTION SMC STRICT (BASÉ SUR TES CAPTURES) ---
+# --- MOTEUR DE DÉTECTION SMC STRICT (EXEMPLES FOURNIS) ---
 def scan_institutional_order_blocks(data, post_touch_limit=10):
     obs = []
     n = len(data)
@@ -158,7 +160,7 @@ def scan_institutional_order_blocks(data, post_touch_limit=10):
     atr = pd.Series(tr).rolling(14).mean().bfill().values
 
     for i in range(5, n - 4):
-        # 1. ZONE ACHAT (Demand Zone)
+        # 1. ZONE ACHAT
         move_up = closes[i+1] - opens[i]
         is_expansion_bull = move_up > (1.8 * atr[i])
         prior_peak = np.max(highs[max(0, i - 12):i])
@@ -195,11 +197,10 @@ def scan_institutional_order_blocks(data, post_touch_limit=10):
                     "low": ob_low,
                     "start_time": int(times[base_idx].timestamp()),
                     "tested": tested,
-                    "color": "rgba(16, 185, 129, 0.22)",
                     "border": "#10b981"
                 })
 
-        # 2. ZONE VENTE (Supply Zone)
+        # 2. ZONE VENTE
         move_down = opens[i] - closes[i+1]
         is_expansion_bear = move_down > (1.8 * atr[i])
         prior_valley = np.min(lows[max(0, i - 12):i])
@@ -236,7 +237,6 @@ def scan_institutional_order_blocks(data, post_touch_limit=10):
                     "low": ob_low,
                     "start_time": int(times[base_idx].timestamp()),
                     "tested": tested,
-                    "color": "rgba(244, 63, 94, 0.22)",
                     "border": "#f43f5e"
                 })
 
@@ -272,7 +272,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- PRÉPARATION DES DONNÉES EN FORMAT JSON ---
+# --- PRÉPARATION DES DONNÉES JSON ---
 candles_data = []
 for t, row in df.iterrows():
     candles_data.append({
@@ -286,21 +286,23 @@ for t, row in df.iterrows():
 candles_json = json.dumps(candles_data)
 zones_json = json.dumps(zones)
 
-# --- CANEVAS TRADINGVIEW LIGHTWEIGHT CHARTS (VRAI MOTEUR) ---
+# --- COMPOSANT TRADINGVIEW LIGHTWEIGHT CHARTS FIABLE ---
 tv_chart_html = f"""
 <!DOCTYPE html>
 <html>
 <head>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <meta charset="utf-8">
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <style>
-        body {{
-            margin: 0;
-            padding: 0;
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        html, body {{
+            width: 100%;
+            height: 100%;
             background-color: #000000;
             overflow: hidden;
         }}
         #tv_chart {{
-            width: 100%;
+            width: 100vw;
             height: 520px;
         }}
     </style>
@@ -308,80 +310,88 @@ tv_chart_html = f"""
 <body>
     <div id="tv_chart"></div>
     <script>
-        const chartContainer = document.getElementById('tv_chart');
-        const chart = LightweightCharts.createChart(chartContainer, {{
-            width: chartContainer.clientWidth,
-            height: 520,
-            layout: {{
-                background: {{ type: 'solid', color: '#000000' }},
-                textColor: '#71717a',
-            }},
-            grid: {{
-                vertLines: {{ color: '#111318' }},
-                horzLines: {{ color: '#111318' }},
-            }},
-            crosshair: {{
-                mode: LightweightCharts.CrosshairMode.Normal,
-            }},
-            rightPriceScale: {{
-                borderColor: '#27272a',
-                scaleMargins: {{
-                    top: 0.1,
-                    bottom: 0.1,
+        window.addEventListener('DOMContentLoaded', () => {{
+            const chartContainer = document.getElementById('tv_chart');
+            const width = chartContainer.clientWidth || window.innerWidth || 800;
+
+            const chart = LightweightCharts.createChart(chartContainer, {{
+                width: width,
+                height: 520,
+                layout: {{
+                    background: {{ type: 'solid', color: '#000000' }},
+                    textColor: '#71717a',
                 }},
-            }},
-            timeScale: {{
-                borderColor: '#27272a',
-                timeVisible: true,
-                secondsVisible: false,
-            }},
-        }});
-
-        const candleSeries = chart.addCandlestickSeries({{
-            upColor: '#10b981',
-            downColor: '#f43f5e',
-            borderUpColor: '#10b981',
-            borderDownColor: '#f43f5e',
-            wickUpColor: '#10b981',
-            wickDownColor: '#f43f5e',
-        }});
-
-        const candles = {candles_json};
-        candleSeries.setData(candles);
-
-        const zones = {zones_json};
-        const lastCandleTime = candles[candles.length - 1].time;
-
-        zones.forEach(z => {{
-            const highLine = chart.addLineSeries({{
-                color: z.border,
-                lineWidth: 1,
-                lineStyle: z.tested ? 2 : 0,
-                priceLineVisible: false,
-                lastValueVisible: false,
+                grid: {{
+                    vertLines: {{ color: '#111318' }},
+                    horzLines: {{ color: '#111318' }},
+                }},
+                crosshair: {{
+                    mode: LightweightCharts.CrosshairMode.Normal,
+                }},
+                rightPriceScale: {{
+                    borderColor: '#27272a',
+                    scaleMargins: {{
+                        top: 0.1,
+                        bottom: 0.1,
+                    }},
+                }},
+                timeScale: {{
+                    borderColor: '#27272a',
+                    timeVisible: true,
+                    secondsVisible: false,
+                }},
             }});
-            highLine.setData([
-                {{ time: z.start_time, value: z.high }},
-                {{ time: lastCandleTime, value: z.high }}
-            ]);
 
-            const lowLine = chart.addLineSeries({{
-                color: z.border,
-                lineWidth: 1,
-                lineStyle: z.tested ? 2 : 0,
-                priceLineVisible: false,
-                lastValueVisible: false,
+            const candleSeries = chart.addCandlestickSeries({{
+                upColor: '#10b981',
+                downColor: '#f43f5e',
+                borderUpColor: '#10b981',
+                borderDownColor: '#f43f5e',
+                wickUpColor: '#10b981',
+                wickDownColor: '#f43f5e',
             }});
-            lowLine.setData([
-                {{ time: z.start_time, value: z.low }},
-                {{ time: lastCandleTime, value: z.low }}
-            ]);
-        }});
 
-        chart.timeScale().fitContent();
+            const candles = {candles_json};
+            candleSeries.setData(candles);
 
-        window.addEventListener('resize', () => {{
-            chart.applyOptions({{ width: chartContainer.clientWidth }});
+            const zones = {zones_json};
+            if (candles.length > 0) {{
+                const lastCandleTime = candles[candles.length - 1].time;
+
+                zones.forEach(z => {{
+                    if (z.start_time <= lastCandleTime) {{
+                        const highLine = chart.addLineSeries({{
+                            color: z.border,
+                            lineWidth: 1,
+                            lineStyle: z.tested ? 2 : 0,
+                            priceLineVisible: false,
+                            lastValueVisible: false,
+                        }});
+                        highLine.setData([
+                            {{ time: z.start_time, value: z.high }},
+                            {{ time: lastCandleTime, value: z.high }}
+                        ]);
+
+                        const lowLine = chart.addLineSeries({{
+                            color: z.border,
+                            lineWidth: 1,
+                            lineStyle: z.tested ? 2 : 0,
+                            priceLineVisible: false,
+                            lastValueVisible: false,
+                        }});
+                        lowLine.setData([
+                            {{ time: z.start_time, value: z.low }},
+                            {{ time: lastCandleTime, value: z.low }}
+                        ]);
+                    }}
+                }});
+            }}
+
+            chart.timeScale().fitContent();
+
+            window.addEventListener('resize', () => {{
+                chart.applyOptions({{ width: chartContainer.clientWidth }});
+            }});
         }});
     </script>
 </body>
