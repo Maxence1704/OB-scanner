@@ -257,72 +257,98 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- GRAPHIQUE ÉPURÉ STYLE TERMINAL SANS TROUS ---
-plot_bars = 120
-recent_df = df.tail(plot_bars).copy()
-recent_df['x_idx'] = np.arange(len(recent_df))
+# --- GRAPHIQUE ÉPURÉ STYLE TERMINAL AVEC HISTORIQUE COMPLET ---
+total_bars = len(df)
+df_plot = df.copy()
+df_plot['x_idx'] = np.arange(total_bars)
 
 fig = go.Figure()
 
-# Chandeliers minimalistes
+# 1. Tracé de l'intégralité des chandeliers
 fig.add_trace(go.Candlestick(
-    x=recent_df['x_idx'],
-    open=recent_df['Open'],
-    high=recent_df['High'],
-    low=recent_df['Low'],
-    close=recent_df['Close'],
+    x=df_plot['x_idx'],
+    open=df_plot['Open'],
+    high=df_plot['High'],
+    low=df_plot['Low'],
+    close=df_plot['Close'],
     increasing=dict(line=dict(color='#10b981', width=1.2), fillcolor='#10b981'),
     decreasing=dict(line=dict(color='#f43f5e', width=1.2), fillcolor='#f43f5e'),
     showlegend=False
 ))
 
-# Zones LuxAlgo
-min_global_idx = len(df) - plot_bars
+# 2. Dessin de toutes les zones LuxAlgo ancrées à leur vraie position
 for z in zones:
-    if z['start_idx'] >= min_global_idx:
-        x0_local = z['start_idx'] - min_global_idx
-        fig.add_shape(
-            type="rect",
-            x0=x0_local,
-            y0=z['low'],
-            x1=plot_bars - 1,
-            y1=z['high'],
-            fillcolor=z['fill'],
-            line=dict(color=z['border'], width=1, dash="dot" if z['tested'] else "solid")
-        )
+    fig.add_shape(
+        type="rect",
+        x0=z['start_idx'],
+        y0=z['low'],
+        x1=total_bars - 1,
+        y1=z['high'],
+        fillcolor=z['fill'],
+        line=dict(color=z['border'], width=1, dash="dot" if z['tested'] else "solid")
+    )
 
-# Graduations dates discrètes en bas
-step = max(1, len(recent_df) // 5)
-tick_indices = list(range(0, len(recent_df), step))
-tick_texts = [recent_df.index[k].strftime('%H:%M') if timeframe in ['1m', '5m', '15m'] else recent_df.index[k].strftime('%d %b') for k in tick_indices]
+# 3. Graduation temporelle sur tout l'historique
+step = max(1, total_bars // 8)
+tick_indices = list(range(0, total_bars, step))
+if tick_indices[-1] != total_bars - 1:
+    tick_indices.append(total_bars - 1)
+
+tick_texts = [
+    df_plot.index[k].strftime('%H:%M') if timeframe in ['1m', '5m', '15m'] 
+    else df_plot.index[k].strftime('%d %b') 
+    for k in tick_indices
+]
+
+# 4. Vue par défaut centrée sur les 90 dernières bougies, avec liberté totale de reculer
+default_visible_bars = 90
+initial_x_start = max(0, total_bars - default_visible_bars)
+initial_x_end = total_bars - 1
+
+# Calcul de l'échelle verticale pour la vue initiale
+recent_slice = df_plot.iloc[initial_x_start:]
+y_min = recent_slice['Low'].min()
+y_max = recent_slice['High'].max()
+y_margin = (y_max - y_min) * 0.08
 
 fig.update_layout(
     template="plotly_dark",
     plot_bgcolor="#000000",
     paper_bgcolor="#000000",
-    height=420,
+    height=480,
     margin=dict(l=0, r=45, t=10, b=10),
-    dragmode="pan",
+    dragmode="pan",  # Glisser au doigt pour reculer dans le temps
     xaxis=dict(
+        range=[initial_x_start, initial_x_end],  # Fenêtre initiale
         showgrid=False,
         zeroline=False,
         showline=False,
         tickvals=tick_indices,
         ticktext=tick_texts,
-        tickfont=dict(color='#52525b', size=11)
+        tickfont=dict(color='#52525b', size=11),
+        fixedrange=False  # Permet le scroll horizontal illimité
     ),
     yaxis=dict(
+        range=[y_min - y_margin, y_max + y_margin],
         showgrid=True,
         gridcolor="#18181b",
         side="right",
         zeroline=False,
         showline=False,
         tickformat=".5f" if is_forex else ",.2f",
-        tickfont=dict(color='#71717a', size=11)
+        tickfont=dict(color='#71717a', size=11),
+        fixedrange=False  # Permet d'ajuster la hauteur verticalement
     )
 )
 
-st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
+st.plotly_chart(
+    fig, 
+    use_container_width=True, 
+    config={
+        'scrollZoom': True, 
+        'displayModeBar': False
+    }
+)
 
 # --- CARTES DE FLUX & ZONES (LOOK NÉO-BANQUE) ---
 c1, c2 = st.columns(2)
