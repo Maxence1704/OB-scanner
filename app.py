@@ -289,6 +289,26 @@ fig.add_trace(go.Candlestick(
 
 # Dessin des Order Blocks
 cutoff_idx = len(df) - display_bars
+# --- GRAPHIQUE PROFESSIONNEL PLOTLY FLUIDE & TACTILE ---
+display_bars = 160
+plot_data = df.tail(display_bars)
+
+fig = go.Figure()
+
+# Chandelier japonais style terminal
+fig.add_trace(go.Candlestick(
+    x=plot_data.index,
+    open=plot_data['Open'],
+    high=plot_data['High'],
+    low=plot_data['Low'],
+    close=plot_data['Close'],
+    name="Prix",
+    increasing=dict(line=dict(color='#10b981', width=1), fillcolor='#10b981'),
+    decreasing=dict(line=dict(color='#ef4444', width=1), fillcolor='#ef4444')
+))
+
+# Dessin des Order Blocks
+cutoff_idx = len(df) - display_bars
 for z in zones:
     if z['idx'] >= cutoff_idx:
         fig.add_shape(
@@ -301,17 +321,24 @@ for z in zones:
             line=dict(color=z['border'], width=1, dash="dot" if z['status'] == "EN TEST" else "solid")
         )
 
+# Suppression des week-ends et nuits sans cotation pour éviter les trous
+fig.update_xaxes(
+    rangebreaks=[
+        dict(bounds=["sat", "mon"]), # Supprime le trou du week-end
+    ]
+)
+
 fig.update_layout(
     template="plotly_dark",
     plot_bgcolor="#0b0d13",
     paper_bgcolor="#0b0d13",
     height=540,
     margin=dict(l=10, r=60, t=10, b=10),
+    dragmode="pan", # Permet de faire défiler le graphique au doigt
     xaxis=dict(
         showgrid=True,
         gridcolor="#161a23",
         rangeslider_visible=False,
-        type="date"
     ),
     yaxis=dict(
         showgrid=True,
@@ -322,7 +349,16 @@ fig.update_layout(
     showlegend=False
 )
 
-st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+# Configuration tactile : scroll, pan et barre d'outils mobile activés
+st.plotly_chart(
+    fig, 
+    use_container_width=True, 
+    config={
+        'scrollZoom': True, 
+        'displayModeBar': True,
+        'modeBarButtonsToRemove': ['select2d', 'lasso2d', 'resetScale2d']
+    }
+)
 
 # --- LISTE DES NIVEAUX INSTITUTIONNELS ACTIFS ---
 st.markdown("##### 🎯 **Cartographie des zones actives (Price Action)**")
