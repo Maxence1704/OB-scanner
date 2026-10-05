@@ -12,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- CSS STYLE TRADE REPUBLIC (ÉPURÉ & NOIR PUR) ---
+# --- CSS STYLE TRADE REPUBLIC ---
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
@@ -116,7 +116,7 @@ with col_sel1:
     asset_label = st.selectbox(
         "Marché",
         ["EUR/USD (Forex)", "BTC/USD (Crypto)", "XAU/USD (Or)", "NASDAQ 100"],
-        index=0,
+        index=3,
         label_visibility="collapsed"
     )
 with col_sel2:
@@ -164,7 +164,7 @@ if df is None or len(df) < 30:
     st.stop()
 
 # --- MOTEUR DE DÉTECTION SMC STRICT (AVEC HISTORIQUE 10 BOUGIES POST-TEST) ---
-def detect_order_blocks_strict(data, swing_length=8, post_touch_limit=10):
+def detect_order_blocks_strict(data, post_touch_limit=10):
     obs = []
     n = len(data)
     highs = data['High'].values
@@ -172,165 +172,103 @@ def detect_order_blocks_strict(data, swing_length=8, post_touch_limit=10):
     closes = data['Close'].values
     opens = data['Open'].values
 
-    # Mesure de l'amplitude moyenne (ATR)
+    # Mesure de la volatilité moyenne (ATR 14)
     tr = np.maximum(highs - lows, np.maximum(np.abs(highs - np.roll(closes, 1)), np.abs(lows - np.roll(closes, 1))))
     atr = pd.Series(tr).rolling(14).mean().bfill().values
 
-    for i in range(swing_length, n - 2):
-        # 1. BEARISH OB (SOMMET ABSOLU DU SWING)
-        is_peak = True
-        pivot_high = highs[i]
-        for offset in range(1, swing_length + 1):
-            if highs[i - offset] >= pivot_high or (i + offset < n and highs[i + offset] > pivot_high):
-                is_peak = False
-                break
+    for i in range(5, n - 2):
+        # 1. BULLISH OB (Impulsion haussière à la base)
+        body = closes[i] - opens[i]
+        is_impulsive_bull = body >= (1.1 * atr[i])
+        recent_high = np.max(highs[max(0, i - 10):i])
+        has_bos_bull = closes[i] > recent_high
+        
+        # FVG haussier présent
+        has_fvg_bull = lows[min(i + 1, n - 1)] > highs[i - 1]
 
-        if is_peak:
-            # Dernière bougie haussière (verte) au sommet
-            target_idx = None
-            for k in range(i, max(0, i - 4), -1):
-                if closes[k] >= opens[k]:
-                    target_idx = k
-                    break
-            if target_idx is None:
-                target_idx = i
-
+        if is_impulsive_bull and has_bos_bull and has_fvg_bull:
+            target_idx = i - 1
             ob_high = float(highs[target_idx])
             ob_low = float(lows[target_idx])
 
-            # Validation du triptyque SMC dans les 3 bougies après le sommet
-            impulse_idx = min(target_idx + 1, n - 1)
-            is_impulsive = (opens[impulse_idx] - closes[impulse_idx]) >= (1.1 * atr[impulse_idx])
-            swing_low_prior = np.min(lows[max(0, target_idx - swing_length):target_idx])
-            has_bos = (closes[impulse_idx] < swing_low_prior) or (closes[min(impulse_idx + 1, n - 1)] < swing_low_prior)
+            future_lows = lows[i + 1:]
+            future_closes = closes[i + 1:]
+
+            broken = np.any(future_closes < ob_low) if len(future_closes) > 0 else False
             
-            # FVG baissier
-            has_fvg = False
-            if impulse_idx + 1 < n:
-                has_fvg = highs[impulse_idx + 1] < ob_low
+            touch_idx = None
+            for idx, l in enumerate(future_lows):
+                if l <= ob_high:
+                    touch_idx = idx
+                    break
 
-            if is_impulsive and has_bos and has_fvg:
-                # Analyse post-détection
-                future_highs = highs[impulse_idx + 1:]
-                future_closes = closes[impulse_idx + 1:]
-                
-                # Invalidation stricte si clôture au-dessus
-                broken_idx = None
-                for idx, c in enumerate(future_closes):
-                    if c > ob_high:
-                        broken_idx = idx
-                        break
-
-                touch_idx = None
-                for idx, h in enumerate(future_highs):
-                    if h >= ob_low:
-                        touch_idx = idx
-                        break
-
-                # Règle des 10 bougies après le premier touché
-                show_zone = True
-                tested = False
-                if touch_idx is not None:
-                    tested = True
-                    bars_since_touch = (len(future_highs) - 1) - touch_idx
-                    if bars_since_touch > post_touch_limit:
-                        show_zone = False
-
-                if broken_idx is not None:
+            show_zone = not broken
+            tested = False
+            if touch_idx is not None:
+                tested = True
+                if (len(future_lows) - 1 - touch_idx) > post_touch_limit:
                     show_zone = False
 
-                if show_zone:
-                    obs.append({
-                        "type": "BEARISH OB",
-                        "high": ob_high,
-                        "low": ob_low,
-                        "start_idx": target_idx,
-                        "tested": tested,
-                        "border": "rgba(244, 63, 94, 0.9)",
-                        "fill": "rgba(244, 63, 94, 0.16)"
-                    })
+            if show_zone:
+                obs.append({
+                    "type": "BULLISH OB",
+                    "high": ob_high,
+                    "low": ob_low,
+                    "start_idx": target_idx,
+                    "tested": tested,
+                    "border": "rgba(16, 185, 129, 0.9)",
+                    "fill": "rgba(16, 185, 129, 0.2)"
+                })
 
-        # 2. BULLISH OB (CREUX ABSOLU DU SWING)
-        is_valley = True
-        pivot_low = lows[i]
-        for offset in range(1, swing_length + 1):
-            if lows[i - offset] <= pivot_low or (i + offset < n and lows[i + offset] < pivot_low):
-                is_valley = False
-                break
+        # 2. BEARISH OB (Impulsion baissière au sommet)
+        body_bear = opens[i] - closes[i]
+        is_impulsive_bear = body_bear >= (1.1 * atr[i])
+        recent_low = np.min(lows[max(0, i - 10):i])
+        has_bos_bear = closes[i] < recent_low
+        has_fvg_bear = highs[min(i + 1, n - 1)] < lows[i - 1]
 
-        if is_valley:
-            # Dernière bougie baissière (rouge) au creux
-            target_idx = None
-            for k in range(i, max(0, i - 4), -1):
-                if closes[k] <= opens[k]:
-                    target_idx = k
-                    break
-            if target_idx is None:
-                target_idx = i
-
+        if is_impulsive_bear and has_bos_bear and has_fvg_bear:
+            target_idx = i - 1
             ob_high = float(highs[target_idx])
             ob_low = float(lows[target_idx])
 
-            # Validation du triptyque SMC
-            impulse_idx = min(target_idx + 1, n - 1)
-            is_impulsive = (closes[impulse_idx] - opens[impulse_idx]) >= (1.1 * atr[impulse_idx])
-            swing_high_prior = np.max(highs[max(0, target_idx - swing_length):target_idx])
-            has_bos = (closes[impulse_idx] > swing_high_prior) or (closes[min(impulse_idx + 1, n - 1)] > swing_high_prior)
+            future_highs = highs[i + 1:]
+            future_closes = closes[i + 1:]
 
-            # FVG haussier
-            has_fvg = False
-            if impulse_idx + 1 < n:
-                has_fvg = lows[impulse_idx + 1] > ob_high
+            broken = np.any(future_closes > ob_high) if len(future_closes) > 0 else False
+            touch_idx = None
+            for idx, h in enumerate(future_highs):
+                if h >= ob_low:
+                    touch_idx = idx
+                    break
 
-            if is_impulsive and has_bos and has_fvg:
-                future_lows = lows[impulse_idx + 1:]
-                future_closes = closes[impulse_idx + 1:]
-
-                broken_idx = None
-                for idx, c in enumerate(future_closes):
-                    if c < ob_low:
-                        broken_idx = idx
-                        break
-
-                touch_idx = None
-                for idx, l in enumerate(future_lows):
-                    if l <= ob_high:
-                        touch_idx = idx
-                        break
-
-                show_zone = True
-                tested = False
-                if touch_idx is not None:
-                    tested = True
-                    bars_since_touch = (len(future_lows) - 1) - touch_idx
-                    if bars_since_touch > post_touch_limit:
-                        show_zone = False
-
-                if broken_idx is not None:
+            show_zone = not broken
+            tested = False
+            if touch_idx is not None:
+                tested = True
+                if (len(future_highs) - 1 - touch_idx) > post_touch_limit:
                     show_zone = False
 
-                if show_zone:
-                    obs.append({
-                        "type": "BULLISH OB",
-                        "high": ob_high,
-                        "low": ob_low,
-                        "start_idx": target_idx,
-                        "tested": tested,
-                        "border": "rgba(16, 185, 129, 0.9)",
-                        "fill": "rgba(16, 185, 129, 0.16)"
-                    })
+            if show_zone:
+                obs.append({
+                    "type": "BEARISH OB",
+                    "high": ob_high,
+                    "low": ob_low,
+                    "start_idx": target_idx,
+                    "tested": tested,
+                    "border": "rgba(244, 63, 94, 0.9)",
+                    "fill": "rgba(244, 63, 94, 0.2)"
+                })
 
-    # Dédoublonnage pour garder les zones les plus fraîches
     unique = []
     seen = set()
     for o in reversed(obs):
         if o['start_idx'] not in seen:
             seen.add(o['start_idx'])
             unique.append(o)
-
     return list(reversed(unique))
 
-zones = detect_order_blocks_strict(df, swing_length=8, post_touch_limit=10)
+zones = detect_order_blocks_strict(df, post_touch_limit=10)
 
 # --- STATISTIQUES & PRIX TRADE REPUBLIC ---
 last_price = float(df['Close'].iloc[-1])
@@ -353,7 +291,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- GRAPHIQUE PLEIN ÉCRAN FLUIDE ---
+# --- GRAPHIQUE PLEIN ÉCRAN FLUIDE AVEC ÉCHELLE À GAUCHE ---
 total_bars = len(df)
 df_plot = df.copy()
 df_plot['x_idx'] = np.arange(total_bars)
@@ -371,7 +309,6 @@ fig.add_trace(go.Candlestick(
     showlegend=False
 ))
 
-# Tracé des Order Blocks (en pointillé si déjà touché en cours de test)
 for z in zones:
     fig.add_shape(
         type="rect",
@@ -407,8 +344,8 @@ fig.update_layout(
     template="plotly_dark",
     plot_bgcolor="#000000",
     paper_bgcolor="#000000",
-    height=480,
-    margin=dict(l=0, r=45, t=10, b=10),
+    height=520,
+    margin=dict(l=60, r=20, t=10, b=10),
     dragmode="pan",
     xaxis=dict(
         range=[initial_x_start, initial_x_end],
@@ -424,7 +361,7 @@ fig.update_layout(
         range=[y_min - y_margin, y_max + y_margin],
         showgrid=True,
         gridcolor="#18181b",
-        side="right",
+        side="left",
         zeroline=False,
         showline=False,
         tickformat=".5f" if is_forex else ",.2f",
@@ -433,7 +370,15 @@ fig.update_layout(
     )
 )
 
-st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
+st.plotly_chart(
+    fig, 
+    use_container_width=True, 
+    config={
+        'scrollZoom': True,
+        'displayModeBar': True,
+        'modeBarButtonsToRemove': ['select2d', 'lasso2d']
+    }
+)
 
 # --- CARTES DE SURVEILLANCE ---
 c1, c2 = st.columns(2)
