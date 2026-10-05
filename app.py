@@ -3,214 +3,351 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from datetime import datetime
 
-# 1. Configuration de la page
+# --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(
-    page_title="OB Pro Scanner",
-    page_icon="⚡",
+    page_title="Terminal SMC | Order Block Scanner",
+    page_icon="🟢",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# 2. Thème sombre
+# --- STYLE CSS HAUT DE GAMME (DARK INSTITUTIONNEL) ---
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap');
+    
+    html, body, [class*="css"] {
+        font-family: 'Inter', -apple-system, sans-serif;
+    }
+    
     .stApp {
-        background-color: #0b0e14;
-        color: #e1e4ea;
+        background-color: #08090c;
+        color: #d1d5db;
     }
-    div[data-testid="stMetric"] {
-        background: #151922;
-        border: 1px solid #232936;
-        border-radius: 12px;
-        padding: 12px 18px;
+    
+    /* Cartes de données */
+    .metric-card {
+        background: #111318;
+        border: 1px solid #1f242d;
+        border-radius: 8px;
+        padding: 14px 18px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
     }
-    div[data-testid="stMetricLabel"] p {
-        color: #8b94a5 !important;
+    .metric-label {
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #6b7280;
+        font-weight: 600;
+        margin-bottom: 4px;
     }
-    div[data-testid="stMetricValue"] div {
-        color: #f3f4f6 !important;
+    .metric-value {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 1.4rem;
+        font-weight: 700;
+        color: #f9fafb;
     }
-    .badge-buy {
-        background: rgba(16, 185, 129, 0.15);
-        color: #10b981;
-        padding: 4px 10px;
+    .metric-sub {
+        font-size: 0.8rem;
+        font-weight: 500;
+    }
+    
+    /* Badges */
+    .badge {
+        font-family: 'JetBrains Mono', monospace;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        display: inline-block;
+    }
+    .badge-buy { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-sell { background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .badge-waiting { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+    .badge-tested { background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); }
+    
+    /* Sélecteurs épurés */
+    div[data-baseweb="select"] > div {
+        background-color: #111318 !important;
+        border: 1px solid #1f242d !important;
+        border-radius: 6px !important;
+        color: white !important;
+    }
+    
+    /* Bouton d'actualisation */
+    .stButton>button {
+        width: 100%;
+        background-color: #1f242d;
+        color: #f3f4f6;
+        border: 1px solid #374151;
         border-radius: 6px;
         font-weight: 600;
-        border: 1px solid rgba(16, 185, 129, 0.3);
+        padding: 0.5rem 1rem;
+        transition: all 0.2s ease;
     }
-    .badge-sell {
-        background: rgba(239, 68, 68, 0.15);
-        color: #ef4444;
-        padding: 4px 10px;
-        border-radius: 6px;
-        font-weight: 600;
-        border: 1px solid rgba(239, 68, 68, 0.3);
-    }
-    .badge-status {
-        background: rgba(59, 130, 246, 0.15);
-        color: #60a5fa;
-        padding: 4px 8px;
-        border-radius: 6px;
+    .stButton>button:hover {
+        background-color: #2d3748;
+        border-color: #4b5563;
+        color: #ffffff;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# 3. Contrôles
-st.markdown("### ⚡ **Order Block Pro Scanner**")
-st.caption("Détection SMC haute précision (Impulsion + BOS + FVG)")
+# --- BARRE SUPÉRIEURE : EN-TÊTE & CONTRÔLES ---
+top_left, top_right = st.columns([3, 1])
+with top_left:
+    st.markdown("### 🟢 **TERMINAL SMC** `v2.0`")
+    st.caption("Détection algorithmique institutionnelle : Order Blocks • Fair Value Gaps • Break of Structure")
 
-c1, c2, c3 = st.columns(3)
+# Filtres actifs et timeframes
+c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
 with c1:
-    ticker = st.selectbox("Actif", ["EURUSD=X", "BTC-USD", "GC=F", "NQ=F"], index=0)
+    ticker_choice = st.selectbox(
+        "Marché",
+        ["EUR/USD (Forex)", "BTC/USD (Crypto)", "XAU/USD (Or)", "NASDAQ 100"],
+        index=0
+    )
 with c2:
-    timeframe = st.selectbox("Unité de temps", ["1m", "5m", "15m", "1h"], index=1)
+    timeframe = st.selectbox("Unité de temps", ["1m", "5m", "15m", "1h", "4h"], index=2)
 with c3:
-    period = st.selectbox("Historique", ["1d", "5d", "1mo"], index=1)
+    # Ajustement automatique de la période maximale supportée par Yahoo Finance
+    period_options = ["1d", "5d", "7d"] if timeframe == "1m" else ["5d", "1mo", "60d"]
+    period = st.selectbox("Historique", period_options, index=0 if timeframe == "1m" else 1)
+with c4:
+    st.write("")
+    st.write("")
+    refresh = st.button("↻ Actualiser")
 
-# 4. Chargement des données
-@st.cache_data(ttl=60)
-def load_data(symbol, interval, lookback):
-    df = yf.download(tickers=symbol, period=lookback, interval=interval, progress=False)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
+ticker_map = {
+    "EUR/USD (Forex)": "EURUSD=X",
+    "BTC/USD (Crypto)": "BTC-USD",
+    "XAU/USD (Or)": "GC=F",
+    "NASDAQ 100": "NQ=F"
+}
+selected_symbol = ticker_map[ticker_choice]
 
-df = load_data(ticker, timeframe, period)
+# --- RÉCUPÉRATION ROBUSTE DES DONNÉES ---
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_clean_data(symbol, interval, lookback):
+    try:
+        df = yf.download(symbol, period=lookback, interval=interval, progress=False)
+        if df.empty:
+            return None
+        # Nettoyage MultiIndex fréquent sur les dernières versions de yfinance
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+        return df
+    except Exception:
+        return None
 
-if df.empty:
-    st.error("Données indisponibles pour cet actif/timeframe.")
+with st.spinner("Synchronisation des flux de marché..."):
+    df = fetch_clean_data(selected_symbol, timeframe, period)
+
+if df is None or len(df) < 20:
+    st.error("Flux indisponible pour cet horizon. Choisis une autre unité de temps.")
     st.stop()
 
-# 5. Détection calibrée des Order Blocks de qualité
-def detect_order_blocks(data):
+# --- ALGORITHME DE DÉTECTION PRÉCIS SMC ---
+def scan_order_blocks(data):
     obs = []
-    data['tr'] = np.maximum(
-        data['High'] - data['Low'],
-        np.maximum(
-            abs(data['High'] - data['Close'].shift(1)),
-            abs(data['Low'] - data['Close'].shift(1))
-        )
-    )
-    atr = data['tr'].rolling(14).mean()
+    # Calcul ATR pour mesurer la violence des impulsions
+    high_low = data['High'] - data['Low']
+    high_close = abs(data['High'] - data['Close'].shift(1))
+    low_close = abs(data['Low'] - data['Close'].shift(1))
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean().bfill()
 
-    for i in range(10, len(data) - 3):
-        # Achat (Demand / Bullish OB)
-        body_i = data['Close'].iloc[i] - data['Open'].iloc[i]
-        is_strong_bull = body_i > (1.5 * atr.iloc[i])
-        recent_high = data['High'].iloc[i-9:i-1].max()
-        has_bos_bull = data['Close'].iloc[i] > recent_high
-        has_fvg_bull = data['Low'].iloc[i+1] > data['High'].iloc[i-1]
-        
-        if is_strong_bull and has_bos_bull and has_fvg_bull:
+    n = len(data)
+    for i in range(10, n - 3):
+        # 1. OB ACHETEUR (Demand Zone)
+        # Bougie i d'impulsion verte puissante
+        impulse_bull = (data['Close'].iloc[i] - data['Open'].iloc[i]) > (1.2 * atr.iloc[i])
+        # Cassure du plus haut récent (BOS)
+        bos_bull = data['Close'].iloc[i] > data['High'].iloc[i-8:i].max()
+        # Déséquilibre net (FVG)
+        fvg_bull = data['Low'].iloc[i+1] > data['High'].iloc[i-1]
+
+        if impulse_bull and bos_bull and fvg_bull:
             ob_high = max(data['High'].iloc[i-1], data['Open'].iloc[i])
             ob_low = data['Low'].iloc[i-1]
-            subsequent = data.iloc[i+1:]
-            if not (subsequent['Close'] < ob_low).any():
-                tested = (subsequent['Low'] <= ob_high).any()
+            future = data.iloc[i+1:]
+            
+            # Non invalidé (aucune clôture sous le bas de l'OB)
+            if not (future['Close'] < ob_low).any():
+                tested = (future['Low'] <= ob_high).any()
                 obs.append({
-                    "Type": "ZONE ACHAT",
-                    "Borne Haute": ob_high,
-                    "Borne Basse": ob_low,
-                    "Statut": "⚡ En test" if tested else "⏳ En attente",
-                    "Couleur": "rgba(16, 185, 129, 0.25)",
-                    "BorderColor": "#10b981",
-                    "Index": i-1
+                    "type": "DEMAND (ACHAT)",
+                    "high": float(ob_high),
+                    "low": float(ob_low),
+                    "time": data.index[i-1],
+                    "idx": i-1,
+                    "status": "EN TEST" if tested else "NON TESTÉ",
+                    "color": "rgba(16, 185, 129, 0.22)",
+                    "border": "#10b981"
                 })
 
-        # Vente (Supply / Bearish OB)
-        body_i_bear = data['Open'].iloc[i] - data['Close'].iloc[i]
-        is_strong_bear = body_i_bear > (1.5 * atr.iloc[i])
-        recent_low = data['Low'].iloc[i-9:i-1].min()
-        has_bos_bear = data['Close'].iloc[i] < recent_low
-        has_fvg_bear = data['High'].iloc[i+1] < data['Low'].iloc[i-1]
-        
-        if is_strong_bear and has_bos_bear and has_fvg_bear:
+        # 2. OB VENDEUR (Supply Zone)
+        impulse_bear = (data['Open'].iloc[i] - data['Close'].iloc[i]) > (1.2 * atr.iloc[i])
+        bos_bear = data['Close'].iloc[i] < data['Low'].iloc[i-8:i].min()
+        fvg_bear = data['High'].iloc[i+1] < data['Low'].iloc[i-1]
+
+        if impulse_bear and bos_bear and fvg_bear:
             ob_high = data['High'].iloc[i-1]
             ob_low = min(data['Low'].iloc[i-1], data['Open'].iloc[i])
-            subsequent = data.iloc[i+1:]
-            if not (subsequent['Close'] > ob_high).any():
-                tested = (subsequent['High'] >= ob_low).any()
+            future = data.iloc[i+1:]
+            
+            # Non invalidé (aucune clôture au-dessus du haut de l'OB)
+            if not (future['Close'] > ob_high).any():
+                tested = (future['High'] >= ob_low).any()
                 obs.append({
-                    "Type": "ZONE VENTE",
-                    "Borne Haute": ob_high,
-                    "Borne Basse": ob_low,
-                    "Statut": "⚡ En test" if tested else "⏳ En attente",
-                    "Couleur": "rgba(239, 68, 68, 0.25)",
-                    "BorderColor": "#ef4444",
-                    "Index": i-1
+                    "type": "SUPPLY (VENTE)",
+                    "high": float(ob_high),
+                    "low": float(ob_low),
+                    "time": data.index[i-1],
+                    "idx": i-1,
+                    "status": "EN TEST" if tested else "NON TESTÉ",
+                    "color": "rgba(239, 68, 68, 0.22)",
+                    "border": "#ef4444"
                 })
+
     return obs
 
-obs = detect_order_blocks(df)
-current_price = df['Close'].iloc[-1]
-price_diff = current_price - df['Open'].iloc[-1]
+zones = scan_order_blocks(df)
+last_close = float(df['Close'].iloc[-1])
+prev_close = float(df['Close'].iloc[-2])
+change_pct = ((last_close - prev_close) / prev_close) * 100
+is_forex = "EUR" in selected_symbol
+fmt = "{:.5f}" if is_forex else "{:,.2f}"
 
-# 6. Métriques
-m1, m2, m3 = st.columns(3)
+# --- MÉTRIQUES SUPÉRIEURES EN CARTES MODERNES ---
+m1, m2, m3, m4 = st.columns(4)
 with m1:
-    st.metric("Prix Actuel", f"{current_price:,.5f}" if "EUR" in ticker else f"{current_price:,.2f} $", f"{price_diff:+,.5f}" if "EUR" in ticker else f"{price_diff:+,.2f} $")
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-label">Dernier Prix</div>
+        <div class="metric-value">{fmt.format(last_close)}</div>
+        <div class="metric-sub" style="color: {'#10b981' if change_pct >= 0 else '#ef4444'};">
+            {'+' if change_pct >= 0 else ''}{change_pct:.2f}%
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 with m2:
-    st.metric("Zones Actives", f"{len(obs)}", f"{timeframe}")
+    demand_count = sum(1 for z in zones if "ACHAT" in z['type'])
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-label">Zones Demand (Achat)</div>
+        <div class="metric-value" style="color:#10b981;">{demand_count}</div>
+        <div class="metric-sub" style="color:#6b7280;">Structure institutionnelle</div>
+    </div>
+    """, unsafe_allow_html=True)
+
 with m3:
-    bull_cnt = sum(1 for x in obs if x['Type'] == "ZONE ACHAT")
-    bear_cnt = sum(1 for x in obs if x['Type'] == "ZONE VENTE")
-    st.metric("Pression SMC", f"{bull_cnt} Achat | {bear_cnt} Vente")
+    supply_count = sum(1 for z in zones if "VENTE" in z['type'])
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-label">Zones Supply (Vente)</div>
+        <div class="metric-value" style="color:#ef4444;">{supply_count}</div>
+        <div class="metric-sub" style="color:#6b7280;">Structure institutionnelle</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-# 7. Graphique
-recent_df = df.tail(100)
-fig = go.Figure(data=[go.Candlestick(
-    x=recent_df.index,
-    open=recent_df['Open'],
-    high=recent_df['High'],
-    low=recent_df['Low'],
-    close=recent_df['Close'],
+with m4:
+    active_now = sum(1 for z in zones if z['status'] == "EN TEST")
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-label">Zones en cours de test</div>
+        <div class="metric-value" style="color:#f59e0b;">{active_now}</div>
+        <div class="metric-sub" style="color:#6b7280;">Action de prix immédiate</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.write("")
+
+# --- GRAPHIQUE PROFESSIONNEL PLOTLY ---
+display_bars = 140
+plot_data = df.tail(display_bars)
+
+fig = go.Figure()
+
+# Chandelier japonais style terminal
+fig.add_trace(go.Candlestick(
+    x=plot_data.index,
+    open=plot_data['Open'],
+    high=plot_data['High'],
+    low=plot_data['Low'],
+    close=plot_data['Close'],
     name="Prix",
-    increasing_line_color="#10b981",
-    decreasing_line_color="#ef4444",
-    increasing_fillcolor="#10b981",
-    decreasing_fillcolor="#ef4444"
-)])
+    increasing=dict(line=dict(color='#10b981', width=1), fillcolor='#10b981'),
+    decreasing=dict(line=dict(color='#ef4444', width=1), fillcolor='#ef4444')
+))
 
-for ob in obs:
-    if ob["Index"] >= len(df) - 100:
+# Dessin des Order Blocks
+cutoff_idx = len(df) - display_bars
+for z in zones:
+    if z['idx'] >= cutoff_idx:
         fig.add_shape(
             type="rect",
-            x0=df.index[ob["Index"]],
-            y0=ob["Borne Basse"],
-            x1=recent_df.index[-1],
-            y1=ob["Borne Haute"],
-            fillcolor=ob["Couleur"],
-            line=dict(width=1, color=ob["BorderColor"], dash="dot"),
+            x0=z['time'],
+            y0=z['low'],
+            x1=plot_data.index[-1],
+            y1=z['high'],
+            fillcolor=z['color'],
+            line=dict(color=z['border'], width=1, dash="dot" if z['status'] == "EN TEST" else "solid")
         )
 
 fig.update_layout(
     template="plotly_dark",
-    plot_bgcolor="#0b0e14",
-    paper_bgcolor="#0b0e14",
-    xaxis_rangeslider_visible=False,
-    height=480,
-    margin=dict(l=10, r=10, t=10, b=10),
-    xaxis=dict(gridcolor="#1b202c", showgrid=True),
-    yaxis=dict(gridcolor="#1b202c", showgrid=True, side="right")
+    plot_bgcolor="#0b0d13",
+    paper_bgcolor="#0b0d13",
+    height=540,
+    margin=dict(l=10, r=60, t=10, b=10),
+    xaxis=dict(
+        showgrid=True,
+        gridcolor="#161a23",
+        rangeslider_visible=False,
+        type="date"
+    ),
+    yaxis=dict(
+        showgrid=True,
+        gridcolor="#161a23",
+        side="right",
+        tickformat=".5f" if is_forex else ",.2f"
+    ),
+    showlegend=False
 )
-st.plotly_chart(fig, use_container_width=True)
 
-# 8. Liste des zones
-st.markdown("#### 📌 **Zones Institutionnelles Actives**")
-if obs:
-    for ob in reversed(obs[-5:]):
-        badge = "badge-buy" if ob['Type'] == "ZONE ACHAT" else "badge-sell"
-        st.markdown(f"""
-        <div style="background:#151922; border:1px solid #232936; border-radius:10px; padding:12px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
-            <div>
-                <span class="{badge}">{ob['Type']}</span>
-                <span style="font-weight:600; margin-left:12px; font-size:1.05rem;">{ob['Borne Basse']:.5f} - {ob['Borne Haute']:.5f}</span>
+st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+# --- LISTE DES NIVEAUX INSTITUTIONNELS ACTIFS ---
+st.markdown("##### 🎯 **Cartographie des zones actives (Price Action)**")
+
+if zones:
+    cols = st.columns(len(zones[-4:]))
+    for i, z in enumerate(reversed(zones[-4:])):
+        is_buy = "ACHAT" in z['type']
+        badge_type = "badge-buy" if is_buy else "badge-sell"
+        badge_status = "badge-tested" if z['status'] == "EN TEST" else "badge-waiting"
+        
+        with cols[i]:
+            st.markdown(f"""
+            <div style="background:#111318; border:1px solid #1f242d; border-radius:8px; padding:12px;">
+                <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                    <span class="badge {badge_type}">{z['type']}</span>
+                    <span class="badge {badge_status}">{z['status']}</span>
+                </div>
+                <div style="font-family:'JetBrains Mono', monospace; font-size:0.95rem; font-weight:600; color:#f3f4f6;">
+                    {fmt.format(z['low'])} — {fmt.format(z['high'])}
+                </div>
+                <div style="font-size:0.75rem; color:#6b7280; margin-top:4px;">
+                    Détecté le {z['time'].strftime('%d/%m à %H:%M')}
+                </div>
             </div>
-            <div>
-                <span class="badge-status">{ob['Statut']}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
 else:
-    st.info("Aucune zone SMC active non mitigée.")
+    st.info("Aucune zone SMC propre active sur cette période.")
