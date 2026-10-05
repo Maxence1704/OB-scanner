@@ -12,34 +12,25 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 2. CSS personnalisé pour un look sombre pro et tactile
+# 2. Thème sombre
 st.markdown("""
 <style>
-    /* Fond général sombre */
     .stApp {
         background-color: #0b0e14;
         color: #e1e4ea;
     }
-    
-    /* Cartes de métriques */
     div[data-testid="stMetric"] {
         background: #151922;
         border: 1px solid #232936;
         border-radius: 12px;
         padding: 12px 18px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
     }
     div[data-testid="stMetricLabel"] p {
         color: #8b94a5 !important;
-        font-weight: 500;
-        font-size: 0.9rem;
     }
     div[data-testid="stMetricValue"] div {
         color: #f3f4f6 !important;
-        font-weight: 700;
     }
-    
-    /* Badges stylisés */
     .badge-buy {
         background: rgba(16, 185, 129, 0.15);
         color: #10b981;
@@ -61,25 +52,21 @@ st.markdown("""
         color: #60a5fa;
         padding: 4px 8px;
         border-radius: 6px;
-        font-size: 0.85rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# 3. En-tête et contrôles
-col_title, col_btn = st.columns([4, 1])
-with col_title:
-    st.markdown("### ⚡ **Order Block Pro Scanner**")
-    st.caption("Détection algorithmique institutionnelle • SMC & Price Action")
+# 3. Contrôles
+st.markdown("### ⚡ **Order Block Pro Scanner**")
+st.caption("Détection SMC haute précision (Impulsion + BOS + FVG)")
 
-# Barre de contrôle
 c1, c2, c3 = st.columns(3)
 with c1:
-    ticker = st.selectbox("Actif", ["BTC-USD", "GC=F", "EURUSD=X", "NQ=F"], index=0)
+    ticker = st.selectbox("Actif", ["EURUSD=X", "BTC-USD", "GC=F", "NQ=F"], index=0)
 with c2:
-    timeframe = st.selectbox("Unité de temps", ["5m", "15m", "1h"], index=1)
+    timeframe = st.selectbox("Unité de temps", ["1m", "5m", "15m", "1h"], index=1)
 with c3:
-    period = st.selectbox("Historique", ["5d", "1mo", "60d"], index=0)
+    period = st.selectbox("Historique", ["1d", "5d", "1mo"], index=1)
 
 # 4. Chargement des données
 @st.cache_data(ttl=60)
@@ -95,62 +82,82 @@ if df.empty:
     st.error("Données indisponibles pour cet actif/timeframe.")
     st.stop()
 
-# 5. Détection des Order Blocks
+# 5. Détection calibrée des Order Blocks de qualité
 def detect_order_blocks(data):
     obs = []
-    for i in range(2, len(data) - 2):
-        # Bullish OB
-        if data['Close'].iloc[i-1] < data['Open'].iloc[i-1]:
-            if data['Low'].iloc[i+1] > data['High'].iloc[i-1]:
-                ob_high = data['High'].iloc[i-1]
-                ob_low = data['Low'].iloc[i-1]
-                subsequent = data.iloc[i:]
-                if not (subsequent['Close'] < ob_low).any():
-                    tested = (subsequent['Low'] <= ob_high).any()
-                    obs.append({
-                        "Type": "ACHAT",
-                        "Borne Haute": ob_high,
-                        "Borne Basse": ob_low,
-                        "Statut": "⚡ En test" if tested else "⏳ Non testé",
-                        "Couleur": "rgba(16, 185, 129, 0.25)",
-                        "BorderColor": "#10b981",
-                        "Index": i-1
-                    })
-        # Bearish OB
-        elif data['Close'].iloc[i-1] > data['Open'].iloc[i-1]:
-            if data['High'].iloc[i+1] < data['Low'].iloc[i-1]:
-                ob_high = data['High'].iloc[i-1]
-                ob_low = data['Low'].iloc[i-1]
-                subsequent = data.iloc[i:]
-                if not (subsequent['Close'] > ob_high).any():
-                    tested = (subsequent['High'] >= ob_low).any()
-                    obs.append({
-                        "Type": "VENTE",
-                        "Borne Haute": ob_high,
-                        "Borne Basse": ob_low,
-                        "Statut": "⚡ En test" if tested else "⏳ Non testé",
-                        "Couleur": "rgba(239, 68, 68, 0.25)",
-                        "BorderColor": "#ef4444",
-                        "Index": i-1
-                    })
+    data['tr'] = np.maximum(
+        data['High'] - data['Low'],
+        np.maximum(
+            abs(data['High'] - data['Close'].shift(1)),
+            abs(data['Low'] - data['Close'].shift(1))
+        )
+    )
+    atr = data['tr'].rolling(14).mean()
+
+    for i in range(10, len(data) - 3):
+        # Achat (Demand / Bullish OB)
+        body_i = data['Close'].iloc[i] - data['Open'].iloc[i]
+        is_strong_bull = body_i > (1.5 * atr.iloc[i])
+        recent_high = data['High'].iloc[i-9:i-1].max()
+        has_bos_bull = data['Close'].iloc[i] > recent_high
+        has_fvg_bull = data['Low'].iloc[i+1] > data['High'].iloc[i-1]
+        
+        if is_strong_bull and has_bos_bull and has_fvg_bull:
+            ob_high = max(data['High'].iloc[i-1], data['Open'].iloc[i])
+            ob_low = data['Low'].iloc[i-1]
+            subsequent = data.iloc[i+1:]
+            if not (subsequent['Close'] < ob_low).any():
+                tested = (subsequent['Low'] <= ob_high).any()
+                obs.append({
+                    "Type": "ZONE ACHAT",
+                    "Borne Haute": ob_high,
+                    "Borne Basse": ob_low,
+                    "Statut": "⚡ En test" if tested else "⏳ En attente",
+                    "Couleur": "rgba(16, 185, 129, 0.25)",
+                    "BorderColor": "#10b981",
+                    "Index": i-1
+                })
+
+        # Vente (Supply / Bearish OB)
+        body_i_bear = data['Open'].iloc[i] - data['Close'].iloc[i]
+        is_strong_bear = body_i_bear > (1.5 * atr.iloc[i])
+        recent_low = data['Low'].iloc[i-9:i-1].min()
+        has_bos_bear = data['Close'].iloc[i] < recent_low
+        has_fvg_bear = data['High'].iloc[i+1] < data['Low'].iloc[i-1]
+        
+        if is_strong_bear and has_bos_bear and has_fvg_bear:
+            ob_high = data['High'].iloc[i-1]
+            ob_low = min(data['Low'].iloc[i-1], data['Open'].iloc[i])
+            subsequent = data.iloc[i+1:]
+            if not (subsequent['Close'] > ob_high).any():
+                tested = (subsequent['High'] >= ob_low).any()
+                obs.append({
+                    "Type": "ZONE VENTE",
+                    "Borne Haute": ob_high,
+                    "Borne Basse": ob_low,
+                    "Statut": "⚡ En test" if tested else "⏳ En attente",
+                    "Couleur": "rgba(239, 68, 68, 0.25)",
+                    "BorderColor": "#ef4444",
+                    "Index": i-1
+                })
     return obs
 
 obs = detect_order_blocks(df)
 current_price = df['Close'].iloc[-1]
 price_diff = current_price - df['Open'].iloc[-1]
 
-# 6. Affichage des métriques visuelles
+# 6. Métriques
 m1, m2, m3 = st.columns(3)
 with m1:
-    st.metric("Prix Actuel", f"{current_price:,.2f} $", f"{price_diff:+,.2f} $")
+    st.metric("Prix Actuel", f"{current_price:,.5f}" if "EUR" in ticker else f"{current_price:,.2f} $", f"{price_diff:+,.5f}" if "EUR" in ticker else f"{price_diff:+,.2f} $")
 with m2:
-    st.metric("OB Actifs", f"{len(obs)}", f"{timeframe}")
+    st.metric("Zones Actives", f"{len(obs)}", f"{timeframe}")
 with m3:
-    bullish_cnt = sum(1 for x in obs if x['Type'] == "ACHAT")
-    bearish_cnt = sum(1 for x in obs if x['Type'] == "VENTE")
-    st.metric("Pression OB", f"{bullish_cnt} Achat | {bearish_cnt} Vente")
+    bull_cnt = sum(1 for x in obs if x['Type'] == "ZONE ACHAT")
+    bear_cnt = sum(1 for x in obs if x['Type'] == "ZONE VENTE")
+    st.metric("Pression SMC", f"{bull_cnt} Achat | {bear_cnt} Vente")
 
-# 7. Graphique Candlestick moderne (Plotly Dark)
+# 7. Graphique
 recent_df = df.tail(100)
 fig = go.Figure(data=[go.Candlestick(
     x=recent_df.index,
@@ -165,7 +172,6 @@ fig = go.Figure(data=[go.Candlestick(
     decreasing_fillcolor="#ef4444"
 )])
 
-# Ajout des zones d'Order Blocks avec design soigné
 for ob in obs:
     if ob["Index"] >= len(df) - 100:
         fig.add_shape(
@@ -190,16 +196,16 @@ fig.update_layout(
 )
 st.plotly_chart(fig, use_container_width=True)
 
-# 8. Tableau des zones actives en format cartes
-st.markdown("#### 📌 **Zones Institutionnelles Récentes**")
+# 8. Liste des zones
+st.markdown("#### 📌 **Zones Institutionnelles Actives**")
 if obs:
-    for ob in reversed(obs[-4:]):
-        badge = "badge-buy" if ob['Type'] == "ACHAT" else "badge-sell"
+    for ob in reversed(obs[-5:]):
+        badge = "badge-buy" if ob['Type'] == "ZONE ACHAT" else "badge-sell"
         st.markdown(f"""
         <div style="background:#151922; border:1px solid #232936; border-radius:10px; padding:12px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
             <div>
                 <span class="{badge}">{ob['Type']}</span>
-                <span style="font-weight:600; margin-left:12px; font-size:1.05rem;">{ob['Borne Basse']:,.2f} - {ob['Borne Haute']:,.2f}</span>
+                <span style="font-weight:600; margin-left:12px; font-size:1.05rem;">{ob['Borne Basse']:.5f} - {ob['Borne Haute']:.5f}</span>
             </div>
             <div>
                 <span class="badge-status">{ob['Statut']}</span>
@@ -207,4 +213,4 @@ if obs:
         </div>
         """, unsafe_allow_html=True)
 else:
-    st.info("Aucune zone active non mitigée.")
+    st.info("Aucune zone SMC active non mitigée.")
