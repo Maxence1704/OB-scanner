@@ -12,7 +12,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- CSS STYLE TRADE REPUBLIC (MINIMALISTE & NOIR PUR) ---
+# --- CSS STYLE TRADE REPUBLIC ---
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
@@ -26,7 +26,6 @@ st.markdown("""
         color: #ffffff;
     }
 
-    /* En-tête de solde / Prix Trade Republic */
     .tr-asset-name {
         font-size: 0.95rem;
         font-weight: 500;
@@ -48,7 +47,6 @@ st.markdown("""
         margin-bottom: 20px;
     }
 
-    /* Cartes minimalistes Trade Republic */
     .tr-card {
         background: #09090b;
         border: 1px solid #18181b;
@@ -63,15 +61,7 @@ st.markdown("""
         letter-spacing: 0.06em;
         color: #71717a;
     }
-    .tr-card-val {
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 1.35rem;
-        font-weight: 700;
-        color: #fafafa;
-        margin-top: 4px;
-    }
 
-    /* Badges épurés */
     .badge-bull {
         background: rgba(16, 185, 129, 0.12);
         color: #10b981;
@@ -91,7 +81,6 @@ st.markdown("""
         font-weight: 600;
     }
 
-    /* Sélecteurs épurés intégrés */
     div[data-baseweb="select"] > div {
         background-color: #09090b !important;
         border: 1px solid #27272a !important;
@@ -101,7 +90,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- SÉLECTEURS DE MARCHÉ ET TIMEFRAME ---
+# --- SÉLECTEURS ---
 col_sel1, col_sel2, col_sel3 = st.columns([2, 1, 1])
 
 with col_sel1:
@@ -154,14 +143,8 @@ if df is None or len(df) < 30:
     st.error("Données de cotation indisponibles. Réessaye avec un autre horizon.")
     st.stop()
 
-# --- ALGORITHME LUXALGO : ORDER BLOCK DETECTOR ---
-def detect_luxalgo_order_blocks(data, swing_length=5):
-    """
-    Reproduction fidèle du détecteur LuxAlgo :
-    1. Identification des points pivots (Swing High / Swing Low).
-    2. Suivi de la cassure de structure (BOS).
-    3. Traçage de l'Order Block d'origine avec maintien tant que non invalidé par clôture.
-    """
+# --- DÉTECTION STRICTE : DERNIÈRE BOUGIE INVERSE À L'EXTRÊME DU SWING ---
+def detect_luxalgo_order_blocks(data, swing_length=10):
     obs = []
     n = len(data)
     highs = data['High'].values
@@ -169,74 +152,95 @@ def detect_luxalgo_order_blocks(data, swing_length=5):
     closes = data['Close'].values
     opens = data['Open'].values
 
-    # Balayage des bougies
-    for i in range(swing_length * 2, n - 2):
-        # Vérification Swing High (BOS Vente)
-        is_swing_high = True
+    for i in range(swing_length, n - swing_length):
+        # 1. SOMMET MAJEUR (Bearish OB au sommet)
+        is_peak = True
+        pivot_high = highs[i]
         for offset in range(1, swing_length + 1):
-            if highs[i - swing_length] <= highs[i - swing_length - offset] or highs[i - swing_length] <= highs[i - swing_length + offset]:
-                is_swing_high = False
+            if highs[i - offset] >= pivot_high or highs[i + offset] > pivot_high:
+                is_peak = False
                 break
 
-        # Rupture baissière de structure (Bearish OB)
-        if closes[i] < lows[i - swing_length]:
-            # Chercher la dernière bougie haussière dans la structure précédente
-            for j in range(i, max(0, i - 10), -1):
-                if closes[j] > opens[j]:
-                    ob_high = highs[j]
-                    ob_low = lows[j]
-                    
-                    # Vérifier si mitigé (clôture au-dessus)
-                    subsequent_closes = closes[i+1:]
-                    if len(subsequent_closes) == 0 or not np.any(subsequent_closes > ob_high):
-                        tested = np.any(highs[i+1:] >= ob_low) if len(highs[i+1:]) > 0 else False
-                        obs.append({
-                            "type": "BEARISH OB",
-                            "high": float(ob_high),
-                            "low": float(ob_low),
-                            "start_idx": j,
-                            "tested": tested,
-                            "border": "rgba(244, 63, 94, 0.9)",
-                            "fill": "rgba(244, 63, 94, 0.16)"
-                        })
+        if is_peak:
+            target_idx = None
+            for k in range(i, max(0, i - 4), -1):
+                if closes[k] >= opens[k]:
+                    target_idx = k
+                    break
+            
+            if target_idx is None:
+                target_idx = i
+
+            ob_high = float(highs[target_idx])
+            ob_low = float(lows[target_idx])
+
+            swing_low_level = np.min(lows[max(0, i - swing_length):i])
+            subsequent_closes = closes[i+1:]
+            
+            if len(subsequent_closes) > 0 and np.any(subsequent_closes < swing_low_level):
+                subsequent_highs = highs[i+1:]
+                if not np.any(subsequent_closes > ob_high):
+                    tested = np.any(subsequent_highs >= ob_low)
+                    obs.append({
+                        "type": "BEARISH OB",
+                        "high": ob_high,
+                        "low": ob_low,
+                        "start_idx": target_idx,
+                        "tested": tested,
+                        "border": "rgba(244, 63, 94, 0.9)",
+                        "fill": "rgba(244, 63, 94, 0.18)"
+                    })
+
+        # 2. CREUX MAJEUR (Bullish OB au creux)
+        is_valley = True
+        pivot_low = lows[i]
+        for offset in range(1, swing_length + 1):
+            if lows[i - offset] <= pivot_low or lows[i + offset] < pivot_low:
+                is_valley = False
+                break
+
+        if is_valley:
+            target_idx = None
+            for k in range(i, max(0, i - 4), -1):
+                if closes[k] <= opens[k]:
+                    target_idx = k
                     break
 
-        # Rupture haussière de structure (Bullish OB)
-        if closes[i] > highs[i - swing_length]:
-            # Chercher la dernière bougie baissière dans la structure précédente
-            for j in range(i, max(0, i - 10), -1):
-                if closes[j] < opens[j]:
-                    ob_high = highs[j]
-                    ob_low = lows[j]
-                    
-                    subsequent_closes = closes[i+1:]
-                    if len(subsequent_closes) == 0 or not np.any(subsequent_closes < ob_low):
-                        tested = np.any(lows[i+1:] <= ob_high) if len(lows[i+1:]) > 0 else False
-                        obs.append({
-                            "type": "BULLISH OB",
-                            "high": float(ob_high),
-                            "low": float(ob_low),
-                            "start_idx": j,
-                            "tested": tested,
-                            "border": "rgba(16, 185, 129, 0.9)",
-                            "fill": "rgba(16, 185, 129, 0.16)"
-                        })
-                    break
+            if target_idx is None:
+                target_idx = i
 
-    # Dédoublonnage pour conserver les zones les plus fraîches
+            ob_high = float(highs[target_idx])
+            ob_low = float(lows[target_idx])
+
+            swing_high_level = np.max(highs[max(0, i - swing_length):i])
+            subsequent_closes = closes[i+1:]
+
+            if len(subsequent_closes) > 0 and np.any(subsequent_closes > swing_high_level):
+                subsequent_lows = lows[i+1:]
+                if not np.any(subsequent_closes < ob_low):
+                    tested = np.any(subsequent_lows <= ob_high)
+                    obs.append({
+                        "type": "BULLISH OB",
+                        "high": ob_high,
+                        "low": ob_low,
+                        "start_idx": target_idx,
+                        "tested": tested,
+                        "border": "rgba(16, 185, 129, 0.9)",
+                        "fill": "rgba(16, 185, 129, 0.18)"
+                    })
+
     unique_obs = []
-    seen = set()
+    seen_indices = set()
     for o in reversed(obs):
-        key = (round(o['high'], 4), round(o['low'], 4), o['type'])
-        if key not in seen:
-            seen.add(key)
+        if o['start_idx'] not in seen_indices:
+            seen_indices.add(o['start_idx'])
             unique_obs.append(o)
+
     return list(reversed(unique_obs))
 
-# Exécution
-zones = detect_luxalgo_order_blocks(df, swing_length=5)
+zones = detect_luxalgo_order_blocks(df, swing_length=10)
 
-# --- VALEURS CLÉS FORMAT TRADE REPUBLIC ---
+# --- STATISTIQUES EN TÊTE ---
 last_price = float(df['Close'].iloc[-1])
 first_price = float(df['Open'].iloc[0])
 diff = last_price - first_price
@@ -257,14 +261,13 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- GRAPHIQUE ÉPURÉ STYLE TERMINAL AVEC HISTORIQUE COMPLET ---
+# --- GRAPHIQUE PLEIN ÉCRAN FLUIDE ---
 total_bars = len(df)
 df_plot = df.copy()
 df_plot['x_idx'] = np.arange(total_bars)
 
 fig = go.Figure()
 
-# 1. Tracé de l'intégralité des chandeliers
 fig.add_trace(go.Candlestick(
     x=df_plot['x_idx'],
     open=df_plot['Open'],
@@ -276,7 +279,6 @@ fig.add_trace(go.Candlestick(
     showlegend=False
 ))
 
-# 2. Dessin de toutes les zones LuxAlgo ancrées à leur vraie position
 for z in zones:
     fig.add_shape(
         type="rect",
@@ -288,7 +290,6 @@ for z in zones:
         line=dict(color=z['border'], width=1, dash="dot" if z['tested'] else "solid")
     )
 
-# 3. Graduation temporelle sur tout l'historique
 step = max(1, total_bars // 8)
 tick_indices = list(range(0, total_bars, step))
 if tick_indices[-1] != total_bars - 1:
@@ -300,12 +301,10 @@ tick_texts = [
     for k in tick_indices
 ]
 
-# 4. Vue par défaut centrée sur les 90 dernières bougies, avec liberté totale de reculer
 default_visible_bars = 90
 initial_x_start = max(0, total_bars - default_visible_bars)
 initial_x_end = total_bars - 1
 
-# Calcul de l'échelle verticale pour la vue initiale
 recent_slice = df_plot.iloc[initial_x_start:]
 y_min = recent_slice['Low'].min()
 y_max = recent_slice['High'].max()
@@ -317,16 +316,16 @@ fig.update_layout(
     paper_bgcolor="#000000",
     height=480,
     margin=dict(l=0, r=45, t=10, b=10),
-    dragmode="pan",  # Glisser au doigt pour reculer dans le temps
+    dragmode="pan",
     xaxis=dict(
-        range=[initial_x_start, initial_x_end],  # Fenêtre initiale
+        range=[initial_x_start, initial_x_end],
         showgrid=False,
         zeroline=False,
         showline=False,
         tickvals=tick_indices,
         ticktext=tick_texts,
         tickfont=dict(color='#52525b', size=11),
-        fixedrange=False  # Permet le scroll horizontal illimité
+        fixedrange=False
     ),
     yaxis=dict(
         range=[y_min - y_margin, y_max + y_margin],
@@ -337,20 +336,13 @@ fig.update_layout(
         showline=False,
         tickformat=".5f" if is_forex else ",.2f",
         tickfont=dict(color='#71717a', size=11),
-        fixedrange=False  # Permet d'ajuster la hauteur verticalement
+        fixedrange=False
     )
 )
 
-st.plotly_chart(
-    fig, 
-    use_container_width=True, 
-    config={
-        'scrollZoom': True, 
-        'displayModeBar': False
-    }
-)
+st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
 
-# --- CARTES DE FLUX & ZONES (LOOK NÉO-BANQUE) ---
+# --- CARTES DE FLUX & ZONES ---
 c1, c2 = st.columns(2)
 bull_obs = [z for z in zones if z['type'] == "BULLISH OB"]
 bear_obs = [z for z in zones if z['type'] == "BEARISH OB"]
