@@ -2,7 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from streamlit_lightweight_charts import renderLightweightCharts
+import streamlit.components.v1 as components
 import json
 
 # --- CONFIGURATION STREAMLIT ---
@@ -13,7 +13,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- STYLE TRADE REPUBLIC (NOIR PUR & MINIMALISME) ---
+# --- STYLE TRADE REPUBLIC (NOIR PUR) ---
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
@@ -144,7 +144,7 @@ if df is None or len(df) < 30:
     st.error("Données de cotation indisponibles. Réessaie avec un autre horizon.")
     st.stop()
 
-# --- ALGORITHME CALIBRÉ SUR TES CAPTURES TRADINGVIEW ---
+# --- MOTEUR DE DÉTECTION SMC STRICT (BASÉ SUR TES CAPTURES) ---
 def scan_institutional_order_blocks(data, post_touch_limit=10):
     obs = []
     n = len(data)
@@ -154,26 +154,18 @@ def scan_institutional_order_blocks(data, post_touch_limit=10):
     opens = data['Open'].values
     times = data.index
 
-    # Calcul ATR
     tr = np.maximum(highs - lows, np.maximum(np.abs(highs - np.roll(closes, 1)), np.abs(lows - np.roll(closes, 1))))
     atr = pd.Series(tr).rolling(14).mean().bfill().values
 
-    # Balayage des structures
     for i in range(5, n - 4):
-        # 1. ZONE ACHAT (DEMAND ZONE) - Modèle EURUSD / BTC / XAU / XAG
-        # Détection d'une impulsion puissante sur 1 à 3 bougies consécutives
+        # 1. ZONE ACHAT (Demand Zone)
         move_up = closes[i+1] - opens[i]
         is_expansion_bull = move_up > (1.8 * atr[i])
-        
-        # Cassure nette du plus haut des 12 bougies précédentes (BOS)
         prior_peak = np.max(highs[max(0, i - 12):i])
         has_bos_bull = (closes[i] > prior_peak) or (closes[i+1] > prior_peak)
-        
-        # FVG haussier obligatoire
         has_fvg_bull = lows[min(i + 2, n - 1)] > highs[i - 1]
 
         if is_expansion_bull and has_bos_bull and has_fvg_bull:
-            # Base de l'OB : la bougie ou consolidation juste avant l'envol
             base_idx = i - 1
             ob_high = float(max(highs[base_idx], opens[i]))
             ob_low = float(min(lows[base_idx], lows[i]))
@@ -181,10 +173,8 @@ def scan_institutional_order_blocks(data, post_touch_limit=10):
             future_lows = lows[i+2:]
             future_closes = closes[i+2:]
 
-            # Invalidation par clôture sous la zone
             broken = np.any(future_closes < ob_low) if len(future_closes) > 0 else False
             
-            # Gestion du test de la zone
             touch_idx = None
             for idx, l in enumerate(future_lows):
                 if l <= ob_high:
@@ -204,21 +194,16 @@ def scan_institutional_order_blocks(data, post_touch_limit=10):
                     "high": ob_high,
                     "low": ob_low,
                     "start_time": int(times[base_idx].timestamp()),
-                    "start_idx": base_idx,
                     "tested": tested,
                     "color": "rgba(16, 185, 129, 0.22)",
                     "border": "#10b981"
                 })
 
-        # 2. ZONE VENTE (SUPPLY ZONE) - Modèle ETH / SOL
+        # 2. ZONE VENTE (Supply Zone)
         move_down = opens[i] - closes[i+1]
         is_expansion_bear = move_down > (1.8 * atr[i])
-        
-        # Cassure nette du creux des 12 bougies précédentes (BOS)
         prior_valley = np.min(lows[max(0, i - 12):i])
         has_bos_bear = (closes[i] < prior_valley) or (closes[i+1] < prior_valley)
-        
-        # FVG baissier obligatoire
         has_fvg_bear = highs[min(i + 2, n - 1)] < lows[i - 1]
 
         if is_expansion_bear and has_bos_bear and has_fvg_bear:
@@ -250,13 +235,11 @@ def scan_institutional_order_blocks(data, post_touch_limit=10):
                     "high": ob_high,
                     "low": ob_low,
                     "start_time": int(times[base_idx].timestamp()),
-                    "start_idx": base_idx,
                     "tested": tested,
                     "color": "rgba(244, 63, 94, 0.22)",
                     "border": "#f43f5e"
                 })
 
-    # Dédoublonnage pour éviter les boîtes empilées
     unique = []
     seen = set()
     for o in reversed(obs):
@@ -289,7 +272,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- FORMATAGE POUR LIGHTWEIGHT CHARTS (VRAI TRADINGVIEW) ---
+# --- PRÉPARATION DES DONNÉES EN FORMAT JSON ---
 candles_data = []
 for t, row in df.iterrows():
     candles_data.append({
@@ -300,73 +283,112 @@ for t, row in df.iterrows():
         "close": float(row['Close'])
     })
 
-# Création des séries de zones horizontales rectangulaires
-extra_series = []
-for z in zones:
-    extra_series.append({
-        "type": "Line",
-        "data": [
-            {"time": z["start_time"], "value": z["high"]},
-            {"time": candles_data[-1]["time"], "value": z["high"]}
-        ],
-        "options": {
-            "color": z["border"],
-            "lineWidth": 1,
-            "lineStyle": 2 if z["tested"] else 0
-        }
-    })
-    extra_series.append({
-        "type": "Line",
-        "data": [
-            {"time": z["start_time"], "value": z["low"]},
-            {"time": candles_data[-1]["time"], "value": z["low"]}
-        ],
-        "options": {
-            "color": z["border"],
-            "lineWidth": 1,
-            "lineStyle": 2 if z["tested"] else 0
-        }
-    })
+candles_json = json.dumps(candles_data)
+zones_json = json.dumps(zones)
 
-chart_options = {
-    "layout": {
-        "backgroundColor": "#000000",
-        "textColor": "#71717a"
-    },
-    "grid": {
-        "vertLines": {"color": "#111318"},
-        "horzLines": {"color": "#111318"}
-    },
-    "crosshair": {
-        "mode": 1
-    },
-    "priceScale": {
-        "borderColor": "#27272a",
-        "scaleMargins": {"top": 0.1, "bottom": 0.1}
-    },
-    "timeScale": {
-        "borderColor": "#27272a",
-        "timeVisible": True,
-        "secondsVisible": False
-    }
-}
+# --- CANEVAS TRADINGVIEW LIGHTWEIGHT CHARTS (VRAI MOTEUR) ---
+tv_chart_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        body {{
+            margin: 0;
+            padding: 0;
+            background-color: #000000;
+            overflow: hidden;
+        }}
+        #tv_chart {{
+            width: 100%;
+            height: 520px;
+        }}
+    </style>
+</head>
+<body>
+    <div id="tv_chart"></div>
+    <script>
+        const chartContainer = document.getElementById('tv_chart');
+        const chart = LightweightCharts.createChart(chartContainer, {{
+            width: chartContainer.clientWidth,
+            height: 520,
+            layout: {{
+                background: {{ type: 'solid', color: '#000000' }},
+                textColor: '#71717a',
+            }},
+            grid: {{
+                vertLines: {{ color: '#111318' }},
+                horzLines: {{ color: '#111318' }},
+            }},
+            crosshair: {{
+                mode: LightweightCharts.CrosshairMode.Normal,
+            }},
+            rightPriceScale: {{
+                borderColor: '#27272a',
+                scaleMargins: {{
+                    top: 0.1,
+                    bottom: 0.1,
+                }},
+            }},
+            timeScale: {{
+                borderColor: '#27272a',
+                timeVisible: true,
+                secondsVisible: false,
+            }},
+        }});
 
-series_config = [
-    {
-        "type": "Candlestick",
-        "data": candles_data,
-        "options": {
-            "upColor": "#10b981",
-            "downColor": "#f43f5e",
-            "borderUpColor": "#10b981",
-            "borderDownColor": "#f43f5e",
-            "wickUpColor": "#10b981",
-            "wickDownColor": "#f43f5e"
-        }
-    }
-] + extra_series
+        const candleSeries = chart.addCandlestickSeries({{
+            upColor: '#10b981',
+            downColor: '#f43f5e',
+            borderUpColor: '#10b981',
+            borderDownColor: '#f43f5e',
+            wickUpColor: '#10b981',
+            wickDownColor: '#f43f5e',
+        }});
 
-renderLightweightCharts([{"chart": chart_options, "series": series_config}], height=520)
+        const candles = {candles_json};
+        candleSeries.setData(candles);
+
+        const zones = {zones_json};
+        const lastCandleTime = candles[candles.length - 1].time;
+
+        zones.forEach(z => {{
+            const highLine = chart.addLineSeries({{
+                color: z.border,
+                lineWidth: 1,
+                lineStyle: z.tested ? 2 : 0,
+                priceLineVisible: false,
+                lastValueVisible: false,
+            }});
+            highLine.setData([
+                {{ time: z.start_time, value: z.high }},
+                {{ time: lastCandleTime, value: z.high }}
+            ]);
+
+            const lowLine = chart.addLineSeries({{
+                color: z.border,
+                lineWidth: 1,
+                lineStyle: z.tested ? 2 : 0,
+                priceLineVisible: false,
+                lastValueVisible: false,
+            }});
+            lowLine.setData([
+                {{ time: z.start_time, value: z.low }},
+                {{ time: lastCandleTime, value: z.low }}
+            ]);
+        }});
+
+        chart.timeScale().fitContent();
+
+        window.addEventListener('resize', () => {{
+            chart.applyOptions({{ width: chartContainer.clientWidth }});
+        }});
+    </script>
+</body>
+</html>
+"""
+
+components.html(tv_chart_html, height=530)
 
 # --- CARTES DE SURVEILLANCE ---
 col1, col2 = st.columns(2)
