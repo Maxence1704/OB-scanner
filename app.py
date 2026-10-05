@@ -5,7 +5,7 @@ import numpy as np
 import streamlit.components.v1 as components
 import json
 
-# --- CONFIGURATION DE LA PAGE ---
+# --- CONFIGURATION STREAMLIT ---
 st.set_page_config(
     page_title="Terminal SMC | Trade Republic Style",
     page_icon="⚡",
@@ -87,13 +87,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- SÉLECTEURS DE MARCHÉ ---
+# --- SÉLECTEURS ---
 c_sel1, c_sel2, c_sel3 = st.columns([2, 1, 1])
 
 with c_sel1:
     asset_label = st.selectbox(
         "Marché",
-        ["EUR/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XAU/USD (Or)", "XAG/USD (Argent)", "NASDAQ 100"],
+        ["BTC/USD", "EUR/USD", "ETH/USD", "SOL/USD", "XAU/USD (Or)", "XAG/USD (Argent)", "NASDAQ 100"],
         index=0,
         label_visibility="collapsed"
     )
@@ -124,7 +124,7 @@ ticker_map = {
 }
 selected_symbol = ticker_map[asset_label]
 
-# --- CHARGEMENT DU FLUX DE MARCHÉ ---
+# --- CHARGEMENT DU FLUX ---
 @st.cache_data(ttl=20, show_spinner=False)
 def load_market_data(symbol, interval, lookback):
     try:
@@ -143,11 +143,11 @@ def load_market_data(symbol, interval, lookback):
 df = load_market_data(selected_symbol, timeframe, period)
 
 if df is None or len(df) < 30:
-    st.error("Données indisponibles. Réessaie avec un autre horizon.")
+    st.error("Données indisponibles. Sélectionne un autre horizon.")
     st.stop()
 
-# --- MOTEUR DE DÉTECTION SMC STRICT (EXEMPLES FOURNIS) ---
-def scan_institutional_order_blocks(data, post_touch_limit=10):
+# --- DÉTECTION SMC EXACTE SUR EXTRÊMES ABSOLUS ---
+def scan_institutional_order_blocks(data, swing_length=8, post_touch_limit=10):
     obs = []
     n = len(data)
     highs = data['High'].values
@@ -159,87 +159,118 @@ def scan_institutional_order_blocks(data, post_touch_limit=10):
     tr = np.maximum(highs - lows, np.maximum(np.abs(highs - np.roll(closes, 1)), np.abs(lows - np.roll(closes, 1))))
     atr = pd.Series(tr).rolling(14).mean().bfill().values
 
-    for i in range(5, n - 4):
-        # 1. ZONE ACHAT
-        move_up = closes[i+1] - opens[i]
-        is_expansion_bull = move_up > (1.8 * atr[i])
-        prior_peak = np.max(highs[max(0, i - 12):i])
-        has_bos_bull = (closes[i] > prior_peak) or (closes[i+1] > prior_peak)
-        has_fvg_bull = lows[min(i + 2, n - 1)] > highs[i - 1]
+    for i in range(swing_length, n - 4):
+        # 1. BEARISH OB (SOMMET ABSOLU)
+        is_swing_high = (highs[i] >= np.max(highs[max(0, i - swing_length):i])) and \
+                        (highs[i] > np.max(highs[i + 1:min(n, i + swing_length)]))
 
-        if is_expansion_bull and has_bos_bull and has_fvg_bull:
-            base_idx = i - 1
-            ob_high = float(max(highs[base_idx], opens[i]))
-            ob_low = float(min(lows[base_idx], lows[i]))
-
-            future_lows = lows[i+2:]
-            future_closes = closes[i+2:]
-
-            broken = np.any(future_closes < ob_low) if len(future_closes) > 0 else False
-            
-            touch_idx = None
-            for idx, l in enumerate(future_lows):
-                if l <= ob_high:
-                    touch_idx = idx
+        if is_swing_high:
+            # Recherche de la dernière bougie verte au plus près de la pointe du sommet
+            target_idx = None
+            for k in range(i, max(0, i - 3), -1):
+                if closes[k] >= opens[k]:
+                    target_idx = k
                     break
+            if target_idx is None:
+                target_idx = i
 
-            show_zone = not broken
-            tested = False
-            if touch_idx is not None:
-                tested = True
-                if (len(future_lows) - 1 - touch_idx) > post_touch_limit:
-                    show_zone = False
+            ob_high = float(highs[i])  # Borne haute = mèche absolue du sommet
+            ob_low = float(min(opens[target_idx], closes[target_idx]))
 
-            if show_zone:
-                obs.append({
-                    "type": "ZONE ACHAT",
-                    "high": ob_high,
-                    "low": ob_low,
-                    "start_time": int(times[base_idx].timestamp()),
-                    "tested": tested,
-                    "border": "#10b981"
-                })
+            # Impulsion baissière puissante quittant le sommet
+            impulse_idx = i + 1
+            body_bear = opens[impulse_idx] - closes[impulse_idx]
+            is_impulsive = (body_bear >= (1.1 * atr[impulse_idx])) or ((opens[i+1] - closes[i+2]) >= (1.5 * atr[i+1]))
 
-        # 2. ZONE VENTE
-        move_down = opens[i] - closes[i+1]
-        is_expansion_bear = move_down > (1.8 * atr[i])
-        prior_valley = np.min(lows[max(0, i - 12):i])
-        has_bos_bear = (closes[i] < prior_valley) or (closes[i+1] < prior_valley)
-        has_fvg_bear = highs[min(i + 2, n - 1)] < lows[i - 1]
+            # BOS baissier : cassure sous la base précédente
+            prior_low = np.min(lows[max(0, i - swing_length):i])
+            has_bos = (closes[impulse_idx] < prior_low) or (closes[min(n-1, impulse_idx + 1)] < prior_low)
+            has_fvg = (impulse_idx + 1 < n) and (highs[impulse_idx + 1] < ob_low)
 
-        if is_expansion_bear and has_bos_bear and has_fvg_bear:
-            base_idx = i - 1
-            ob_high = float(max(highs[base_idx], highs[i]))
-            ob_low = float(min(lows[base_idx], opens[i]))
+            if is_impulsive and (has_bos or has_fvg):
+                future_highs = highs[impulse_idx + 1:]
+                future_closes = closes[impulse_idx + 1:]
 
-            future_highs = highs[i+2:]
-            future_closes = closes[i+2:]
+                broken = np.any(future_closes > ob_high) if len(future_closes) > 0 else False
+                
+                touch_idx = None
+                for idx, h in enumerate(future_highs):
+                    if h >= ob_low:
+                        touch_idx = idx
+                        break
 
-            broken = np.any(future_closes > ob_high) if len(future_closes) > 0 else False
-            
-            touch_idx = None
-            for idx, h in enumerate(future_highs):
-                if h >= ob_low:
-                    touch_idx = idx
+                show_zone = not broken
+                tested = False
+                if touch_idx is not None:
+                    tested = True
+                    if (len(future_highs) - 1 - touch_idx) > post_touch_limit:
+                        show_zone = False
+
+                if show_zone:
+                    obs.append({
+                        "type": "ZONE VENTE",
+                        "high": ob_high,
+                        "low": ob_low,
+                        "start_time": int(times[target_idx].timestamp()),
+                        "tested": tested,
+                        "border": "#f43f5e"
+                    })
+
+        # 2. BULLISH OB (CREUX ABSOLU)
+        is_swing_low = (lows[i] <= np.min(lows[max(0, i - swing_length):i])) and \
+                       (lows[i] < np.min(lows[i + 1:min(n, i + swing_length)]))
+
+        if is_swing_low:
+            # Recherche de la dernière bougie rouge au plus près du creux
+            target_idx = None
+            for k in range(i, max(0, i - 3), -1):
+                if closes[k] <= opens[k]:
+                    target_idx = k
                     break
+            if target_idx is None:
+                target_idx = i
 
-            show_zone = not broken
-            tested = False
-            if touch_idx is not None:
-                tested = True
-                if (len(future_highs) - 1 - touch_idx) > post_touch_limit:
-                    show_zone = False
+            ob_high = float(max(opens[target_idx], closes[target_idx]))
+            ob_low = float(lows[i])  # Borne basse = mèche absolue du creux
 
-            if show_zone:
-                obs.append({
-                    "type": "ZONE VENTE",
-                    "high": ob_high,
-                    "low": ob_low,
-                    "start_time": int(times[base_idx].timestamp()),
-                    "tested": tested,
-                    "border": "#f43f5e"
-                })
+            impulse_idx = i + 1
+            body_bull = closes[impulse_idx] - opens[impulse_idx]
+            is_impulsive = (body_bull >= (1.1 * atr[impulse_idx])) or ((closes[i+2] - opens[i+1]) >= (1.5 * atr[i+1]))
 
+            prior_high = np.max(highs[max(0, i - swing_length):i])
+            has_bos = (closes[impulse_idx] > prior_high) or (closes[min(n-1, impulse_idx + 1)] > prior_high)
+            has_fvg = (impulse_idx + 1 < n) and (lows[impulse_idx + 1] > ob_high)
+
+            if is_impulsive and (has_bos or has_fvg):
+                future_lows = lows[impulse_idx + 1:]
+                future_closes = closes[impulse_idx + 1:]
+
+                broken = np.any(future_closes < ob_low) if len(future_closes) > 0 else False
+                
+                touch_idx = None
+                for idx, l in enumerate(future_lows):
+                    if l <= ob_high:
+                        touch_idx = idx
+                        break
+
+                show_zone = not broken
+                tested = False
+                if touch_idx is not None:
+                    tested = True
+                    if (len(future_lows) - 1 - touch_idx) > post_touch_limit:
+                        show_zone = False
+
+                if show_zone:
+                    obs.append({
+                        "type": "ZONE ACHAT",
+                        "high": ob_high,
+                        "low": ob_low,
+                        "start_time": int(times[target_idx].timestamp()),
+                        "tested": tested,
+                        "border": "#10b981"
+                    })
+
+    # Dédoublonnage
     unique = []
     seen = set()
     for o in reversed(obs):
@@ -249,7 +280,7 @@ def scan_institutional_order_blocks(data, post_touch_limit=10):
             unique.append(o)
     return list(reversed(unique))
 
-zones = scan_institutional_order_blocks(df, post_touch_limit=10)
+zones = scan_institutional_order_blocks(df, swing_length=8, post_touch_limit=10)
 
 # --- STATISTIQUES TRADE REPUBLIC ---
 last_price = float(df['Close'].iloc[-1])
@@ -286,7 +317,7 @@ for t, row in df.iterrows():
 candles_json = json.dumps(candles_data)
 zones_json = json.dumps(zones)
 
-# --- COMPOSANT TRADINGVIEW LIGHTWEIGHT CHARTS FIABLE ---
+# --- TRADINGVIEW LIGHTWEIGHT CHARTS OFFICIEL ---
 tv_chart_html = f"""
 <!DOCTYPE html>
 <html>
