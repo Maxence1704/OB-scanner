@@ -44,9 +44,9 @@ def load(sym: str, tf: str) -> pd.DataFrame:
         }).dropna()
     return df
 
-# --- DÉTECTION PURE SMC INSTITUTIONNELLE ---
-def detect(df: pd.DataFrame, swing_len: int = 6, hold: int = 10) -> list:
-    if len(df) < 50:
+# --- DÉTECTION SMC SANS AUCUNE ANOMALIE DE COULEUR ---
+def detect(df: pd.DataFrame, swing_len: int = 5, hold: int = 10) -> list:
+    if len(df) < 60:
         return []
 
     highs = df["High"].values
@@ -56,61 +56,58 @@ def detect(df: pd.DataFrame, swing_len: int = 6, hold: int = 10) -> list:
     times = [int(t.timestamp()) for t in df.index]
     N = len(closes)
 
-    # ATR 14 classique
     tr = np.maximum(highs - lows, np.maximum(np.abs(highs - np.roll(closes, 1)), np.abs(lows - np.roll(closes, 1))))
     atr = pd.Series(tr).rolling(14).mean().bfill().values
 
     zones = []
 
-    # 1. DÉTECTION BEARISH ORDER BLOCKS (SUPPLY / VENTE)
+    # 1. BEARISH ORDER BLOCK (SUPPLY / VENTE)
     for i in range(swing_len, N - 4):
-        # Le pivot doit être le plus haut sur toute la fenêtre [i - swing_len : i + swing_len]
+        # Vérification du Swing High
         win_start = max(0, i - swing_len)
         win_end = min(N, i + swing_len + 1)
         if highs[i] != np.max(highs[win_start:win_end]):
             continue
 
-        # La bougie exacte du sommet ou la dernière bougie verte au sommet
-        base_idx = i
-        for k in range(i, max(0, i - 3), -1):
-            if closes[k] >= opens[k]:
-                base_idx = k
+        # Recherche impérative d'une bougie VERTE (haussière) au sommet
+        green_idx = None
+        for k in range(i, max(0, i - 4), -1):
+            if closes[k] > opens[k]:
+                green_idx = k
                 break
 
-        # Géométrie exacte : Mèche haute absolue du sommet
-        top_zone = float(highs[i])
-        bot_zone = float(min(opens[base_idx], closes[base_idx]))
-
-        # Validation de l'impulsion baissière en sortie de sommet
-        impulse_found = False
-        bos_found = False
-        prior_valley = np.min(lows[max(0, i - (swing_len * 2)):i])
-
-        for j in range(i + 1, min(i + 4, N)):
-            body = opens[j] - closes[j]
-            if body >= 1.0 * atr[j]:
-                impulse_found = True
-            if closes[j] < prior_valley:
-                bos_found = True
-
-        # S'il n'y a ni déplacement fort ni cassure structurelle : on rejette
-        if not (impulse_found and bos_found):
+        # Si aucune bougie verte n'existe au sommet, ce n'est PAS un Bearish OB
+        if green_idx is None:
             continue
 
-        # Vérification du cycle de vie
+        # La bougie d'impulsion qui suit le sommet DOIT être rouge (baissière)
+        impulse_idx = i + 1
+        if impulse_idx >= N or closes[impulse_idx] >= opens[impulse_idx]:
+            continue
+
+        body_bear = opens[impulse_idx] - closes[impulse_idx]
+        if body_bear < 1.1 * atr[impulse_idx]:
+            continue
+
+        # BOS : cassure sous un creux antérieur
+        prior_valley = np.min(lows[max(0, i - (swing_len * 2)):i])
+        has_bos = np.any(closes[impulse_idx:min(i + 4, N)] < prior_valley)
+        if not has_bos:
+            continue
+
+        # Géométrie : mèche haute absolue du sommet et corps/bas de la bougie verte
+        top_zone = float(highs[i])
+        bot_zone = float(min(opens[green_idx], closes[green_idx]))
+
+        # Cycle de vie
         touched = None
         alive = True
-        start_check = min(i + 3, N - 1)
-
-        for t in range(start_check, N):
-            # Clôture au-dessus du sommet = zone détruite
+        for t in range(impulse_idx + 1, N):
             if closes[t] > top_zone:
                 alive = False
                 break
-            # Contact mèche
             if touched is None and highs[t] >= bot_zone:
                 touched = t
-            # Règle des 10 bougies post-test
             if touched is not None and (t - touched) > hold:
                 alive = False
                 break
@@ -118,47 +115,54 @@ def detect(df: pd.DataFrame, swing_len: int = 6, hold: int = 10) -> list:
         if alive:
             zones.append({
                 "side": "Supply",
-                "t0": times[base_idx],
+                "t0": times[green_idx],
                 "bottom": bot_zone,
                 "top": top_zone,
                 "status": "EN TEST" if touched is not None else "ACTIVE"
             })
 
-    # 2. DÉTECTION BULLISH ORDER BLOCKS (DEMAND / ACHAT)
+    # 2. BULLISH ORDER BLOCK (DEMAND / ACHAT)
     for i in range(swing_len, N - 4):
+        # Vérification du Swing Low
         win_start = max(0, i - swing_len)
         win_end = min(N, i + swing_len + 1)
         if lows[i] != np.min(lows[win_start:win_end]):
             continue
 
-        base_idx = i
-        for k in range(i, max(0, i - 3), -1):
-            if closes[k] <= opens[k]:
-                base_idx = k
+        # Recherche impérative d'une bougie ROUGE (baissière) au creux
+        red_idx = None
+        for k in range(i, max(0, i - 4), -1):
+            if closes[k] < opens[k]:
+                red_idx = k
                 break
 
-        bot_zone = float(lows[i])  # Mèche basse absolue du creux
-        top_zone = float(max(opens[base_idx], closes[base_idx]))
-
-        impulse_found = False
-        bos_found = False
-        prior_peak = np.max(highs[max(0, i - (swing_len * 2)):i])
-
-        for j in range(i + 1, min(i + 4, N)):
-            body = closes[j] - opens[j]
-            if body >= 1.0 * atr[j]:
-                impulse_found = True
-            if closes[j] > prior_peak:
-                bos_found = True
-
-        if not (impulse_found and bos_found):
+        # Si aucune bougie rouge n'existe au creux, ce n'est PAS un Bullish OB
+        if red_idx is None:
             continue
 
+        # La bougie d'impulsion qui suit le creux DOIT être verte (haussière)
+        impulse_idx = i + 1
+        if impulse_idx >= N or closes[impulse_idx] <= opens[impulse_idx]:
+            continue
+
+        body_bull = closes[impulse_idx] - opens[impulse_idx]
+        if body_bull < 1.1 * atr[impulse_idx]:
+            continue
+
+        # BOS : cassure au-dessus d'un sommet antérieur
+        prior_peak = np.max(highs[max(0, i - (swing_len * 2)):i])
+        has_bos = np.any(closes[impulse_idx:min(i + 4, N)] > prior_peak)
+        if not has_bos:
+            continue
+
+        # Géométrie : mèche basse absolue du creux et corps/haut de la bougie rouge
+        bot_zone = float(lows[i])
+        top_zone = float(max(opens[red_idx], closes[red_idx]))
+
+        # Cycle de vie
         touched = None
         alive = True
-        start_check = min(i + 3, N - 1)
-
-        for t in range(start_check, N):
+        for t in range(impulse_idx + 1, N):
             if closes[t] < bot_zone:
                 alive = False
                 break
@@ -171,13 +175,13 @@ def detect(df: pd.DataFrame, swing_len: int = 6, hold: int = 10) -> list:
         if alive:
             zones.append({
                 "side": "Demand",
-                "t0": times[base_idx],
+                "t0": times[red_idx],
                 "bottom": bot_zone,
                 "top": top_zone,
                 "status": "EN TEST" if touched is not None else "ACTIVE"
             })
 
-    # Dédoublonnage strict par prix pour éviter les boîtes superposées
+    # Dédoublonnage
     clean_zones = []
     seen = set()
     for z in reversed(zones):
