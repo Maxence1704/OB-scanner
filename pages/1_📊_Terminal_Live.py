@@ -1,156 +1,132 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import numpy as np
-import streamlit.components.v1 as components
 import json
+import streamlit as st
+import streamlit.components.v1 as components
+import common as cm
 
-st.set_page_config(page_title="Graphique Live | SMC", layout="wide")
+cm.setup("Terminal Live")
+cm.header("Terminal Live", "Échelles étirables au glisser · pan libre · boîtes SMC synchronisées")
 
-st.markdown("""
+c1, c2, c3, c4 = st.columns([2, 1.2, 1.2, 1])
+name = c1.selectbox("Actif", list(cm.ASSETS), index=0)
+tf = c2.selectbox("Timeframe", list(cm.TFS), index=1)
+show = c3.selectbox("Order blocks", ["Afficher", "Masquer"])
+c4.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
+
+if c4.button("Actualiser", use_container_width=True):
+    cm.load.clear()
+    cm.quote.clear()
+    cm.scan_all.clear()
+
+sym, dec = cm.ASSETS[name]
+df = cm.load(sym, tf)
+
+if df.empty:
+    st.error("Aucune donnée reçue de Yahoo Finance pour cet actif et ce timeframe. Réessayez dans un instant.")
+    st.stop()
+
+df = df.tail(1500)
+last, first = float(df["Close"].iloc[-1]), float(df["Open"].iloc[0])
+q = cm.quote(sym)
+chg = q["chg"] if q else (last / first - 1) * 100
+col = cm.GREEN if chg >= 0 else cm.RED
+zones = cm.detect(df) if show == "Afficher" else []
+
+st.markdown(
+    f"<div style='display:flex; align-items:baseline; gap:18px'>"
+    f"<span class='num' style='font-size:48px'>{cm.fmt(last, dec)}</span>"
+    f"<span class='num' style='font-size:20px; color:{col}'>{chg:+.2f}%</span>"
+    f"<span class='lbl'>{name} · {tf} · {len(zones)} zone(s)</span></div>",
+    unsafe_allow_html=True
+)
+
+candles = [
+    dict(time=int(t.timestamp()), open=float(r.Open), high=float(r.High), low=float(r.Low), close=float(r.Close))
+    for t, r in df.iterrows()
+]
+
+HTML = """<!doctype html><html><head><meta charset="utf-8">
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@500;700&display=swap');
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    .stApp { background-color: #000000; color: #ffffff; }
-    div[data-baseweb="select"] > div {
-        background-color: #09090b !important;
-        border: 1px solid #27272a !important;
-        border-radius: 10px !important;
-        color: white !important;
-    }
-    .tr-card {
-        background: #09090b;
-        border: 1px solid #18181b;
-        border-radius: 12px;
-        padding: 16px 20px;
-        margin-top: 14px;
-    }
-    .tr-card-header {
-        font-size: 0.75rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        color: #71717a;
-        margin-bottom: 8px;
-    }
-</style>
-""", unsafe_allow_html=True)
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+#w { position: relative; height: 100%; border: 1px solid #18181b; border-radius: 16px; overflow: hidden; box-sizing: border-box; }
+#c { position: absolute; inset: 0; }
+#o { position: absolute; left: 0; top: 0; pointer-events: none; }
+</style></head>
+<body><div id="w"><div id="c"></div><canvas id="o"></canvas></div><script>
+const D = _DATA_, Z = _ZONES_, DEC = _DEC_;
+const el = document.getElementById('c'), cv = document.getElementById('o'), cx = cv.getContext('2d');
+const chart = LightweightCharts.createChart(el, {
+    width: el.clientWidth,
+    height: el.clientHeight,
+    layout: { background: { type: 'solid', color: '#000000' }, textColor: '#71717a', fontFamily: 'Inter, sans-serif' },
+    grid: { vertLines: { color: '#0c0c0e' }, horzLines: { color: '#0c0c0e' } },
+    crosshair: { mode: 0 },
+    rightPriceScale: { borderColor: '#18181b', scaleMargins: { top: 0.1, bottom: 0.1 } },
+    timeScale: { borderColor: '#18181b', timeVisible: true, secondsVisible: false, rightOffset: 8 },
+    handleScale: { axisPressedMouseMove: { time: true, price: true }, mouseWheel: true, pinch: true },
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true }
+});
 
-c1, c2, c3 = st.columns([2, 1, 1])
-with c1:
-    asset = st.selectbox("Actif", ["BTC/USD", "EUR/USD", "ETH/USD", "SOL/USD", "XAU/USD (Or)", "XAG/USD (Argent)", "NASDAQ 100"], index=0)
-with c2:
-    tf = st.selectbox("Horizon", ["1m", "5m", "15m", "1h", "4h"], index=1)
-with c3:
-    period = "1d" if tf == "1m" else "5d"
+const s = chart.addCandlestickSeries({
+    upColor: '#00d632', downColor: '#ff3b30', borderUpColor: '#00d632', borderDownColor: '#ff3b30',
+    wickUpColor: '#00d632', wickDownColor: '#ff3b30',
+    priceFormat: { type: 'price', precision: DEC, minMove: 1 / Math.pow(10, DEC) }
+});
+s.setData(D);
+chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, D.length - 140), to: D.length - 1 + 8 });
 
-ticker_map = {
-    "EUR/USD": "EURUSD=X", "BTC/USD": "BTC-USD", "ETH/USD": "ETH-USD",
-    "SOL/USD": "SOL-USD", "XAU/USD (Or)": "GC=F", "XAG/USD (Argent)": "SI=F", "NASDAQ 100": "NQ=F"
+const ts = chart.timeScale();
+let last = '';
+
+function dims() {
+    let pw = 60, th = 28;
+    try { pw = chart.priceScale('right').width(); } catch(e) {}
+    try { th = ts.height(); } catch(e) {}
+    return [Math.max(1, el.clientWidth - pw), Math.max(1, el.clientHeight - th)];
 }
 
-df = yf.download(ticker_map[asset], period=period, interval=tf, progress=False)
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = df.columns.get_level_values(0)
-df = df[['Open', 'High', 'Low', 'Close']].dropna()
-df = df[~df.index.duplicated(keep='first')].sort_index()
+function draw() {
+    const [w, h] = dims(), tEnd = D[D.length - 1].time, R = [];
+    let sig = w + ' | ' + h;
+    for (const z of Z) {
+        const x0 = ts.timeToCoordinate(z.t0), x1 = ts.timeToCoordinate(tEnd);
+        const y0 = s.priceToCoordinate(z.top), y1 = s.priceToCoordinate(z.bottom);
+        if (y0 === null || y1 === null) continue;
+        R.push([z, x0 === null ? 0 : x0, x1 === null ? w : x1, y0, y1]);
+        sig += '|' + x0 + ',' + x1 + ',' + y0 + ',' + y1;
+    }
+    if (sig === last) return;
+    last = sig;
+    const d = window.devicePixelRatio || 1;
+    cv.width = w * d; cv.height = h * d;
+    cv.style.width = w + 'px'; cv.style.height = h + 'px';
+    cx.setTransform(d, 0, 0, d, 0, 0);
+    cx.clearRect(0, 0, w, h);
+    for (const [z, x0, x1, y0, y1] of R) {
+        if (x1 < 0 || x0 > w) continue;
+        const up = z.side === 'Demand', c = up ? '0,214,50' : '255,59,48';
+        const test = z.status === 'EN TEST', L = Math.max(x0, 0);
+        cx.fillStyle = 'rgba(' + c + ',' + (test ? 0.24 : 0.12) + ')';
+        cx.fillRect(L, y0, x1 - L, y1 - y0);
+        cx.strokeStyle = 'rgba(' + c + ',.9)';
+        cx.setLineDash(test ? [5, 3] : []);
+        cx.lineWidth = 1;
+        cx.strokeRect(L + 0.5, y0 + 0.5, x1 - L, y1 - y0);
+        cx.fillStyle = 'rgb(' + c + ')';
+        cx.font = '600 11px Inter, sans-serif';
+        cx.fillText((up ? 'DEMAND' : 'SUPPLY') + ' ' + z.status, L + 6, Math.min(y0, y1) + 14);
+    }
+}
 
-# Détection des zones SMC
-highs, lows, closes, opens = df['High'].values, df['Low'].values, df['Close'].values, df['Open'].values
-times = df.index
-tr = np.maximum(highs - lows, np.maximum(np.abs(highs - np.roll(closes, 1)), np.abs(lows - np.roll(closes, 1))))
-atr = pd.Series(tr).rolling(14).mean().bfill().values
+(function loop() { draw(); requestAnimationFrame(loop); })();
+new ResizeObserver(() => { chart.applyOptions({ width: el.clientWidth, height: el.clientHeight }); last = ''; }).observe(el);
+</script></body></html>"""
 
-zones = []
-n = len(df)
-swing_length = 8
+html = (HTML.replace("_DATA_", json.dumps(candles))
+            .replace("_ZONES_", json.dumps(zones))
+            .replace("_DEC_", str(dec)))
 
-for i in range(swing_length, n - 4):
-    # Bearish OB
-    if (highs[i] >= np.max(highs[max(0, i - swing_length):i])) and (highs[i] > np.max(highs[i + 1:min(n, i + swing_length)])):
-        target_idx = i
-        for k in range(i, max(0, i - 3), -1):
-            if closes[k] >= opens[k]:
-                target_idx = k
-                break
-        ob_high = float(highs[i])
-        ob_low = float(min(opens[target_idx], closes[target_idx]))
-        if (opens[i+1] - closes[i+1]) >= (1.1 * atr[i+1]):
-            if not np.any(closes[i+1:] > ob_high):
-                zones.append({"type": "ZONE VENTE", "high": ob_high, "low": ob_low, "start_time": int(times[target_idx].timestamp()), "border": "#f43f5e"})
+components.html(html, height=660, scrolling=False)
 
-    # Bullish OB
-    if (lows[i] <= np.min(lows[max(0, i - swing_length):i])) and (lows[i] < np.min(lows[i + 1:min(n, i + swing_length)])):
-        target_idx = i
-        for k in range(i, max(0, i - 3), -1):
-            if closes[k] <= opens[k]:
-                target_idx = k
-                break
-        ob_high = float(max(opens[target_idx], closes[target_idx]))
-        ob_low = float(lows[i])
-        if (closes[i+1] - opens[i+1]) >= (1.1 * atr[i+1]):
-            if not np.any(closes[i+1:] < ob_low):
-                zones.append({"type": "ZONE ACHAT", "high": ob_high, "low": ob_low, "start_time": int(times[target_idx].timestamp()), "border": "#10b981"})
-
-# Formatage JSON pour le graphique
-candles_data = [{"time": int(t.timestamp()), "open": float(r['Open']), "high": float(r['High']), "low": float(r['Low']), "close": float(r['Close'])} for t, r in df.iterrows()]
-candles_json = json.dumps(candles_data)
-zones_json = json.dumps(zones)
-
-tv_html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        html, body {{ width: 100%; height: 100%; background: #000; overflow: hidden; }}
-        #tv_chart {{ width: 100vw; height: 520px; }}
-    </style>
-</head>
-<body>
-    <div id="tv_chart"></div>
-    <script>
-        window.addEventListener('DOMContentLoaded', () => {{
-            const container = document.getElementById('tv_chart');
-            const chart = LightweightCharts.createChart(container, {{
-                width: container.clientWidth || 800,
-                height: 520,
-                layout: {{ background: {{ type: 'solid', color: '#000000' }}, textColor: '#71717a' }},
-                grid: {{ vertLines: {{ color: '#111318' }}, horzLines: {{ color: '#111318' }} }},
-                crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
-                rightPriceScale: {{ borderColor: '#27272a' }},
-                timeScale: {{ borderColor: '#27272a', timeVisible: true, secondsVisible: false }}
-            }});
-
-            const candleSeries = chart.addCandlestickSeries({{
-                upColor: '#10b981', downColor: '#f43f5e',
-                borderUpColor: '#10b981', borderDownColor: '#f43f5e',
-                wickUpColor: '#10b981', wickDownColor: '#f43f5e'
-            }});
-
-            const candles = {candles_json};
-            candleSeries.setData(candles);
-
-            const zones = {zones_json};
-            if (candles.length > 0) {{
-                const lastTime = candles[candles.length - 1].time;
-                zones.forEach(z => {{
-                    if (z.start_time <= lastTime) {{
-                        const hLine = chart.addLineSeries({{ color: z.border, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }});
-                        hLine.setData([{{ time: z.start_time, value: z.high }}, {{ time: lastTime, value: z.high }}]);
-                        const lLine = chart.addLineSeries({{ color: z.border, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }});
-                        lLine.setData([{{ time: z.start_time, value: z.low }}, {{ time: lastTime, value: z.low }}]);
-                    }}
-                }});
-            }}
-
-            chart.timeScale().fitContent();
-            window.addEventListener('resize', () => chart.applyOptions({{ width: container.clientWidth }}));
-        }});
-    </script>
-</body>
-</html>
-"""
-
-components.html(tv_html, height=530)
+st.caption("Contact mèche : EN TEST pendant 10 bougies. Clôture au-delà de la boîte : zone supprimée. "
+           "Un pivot n'est confirmé qu'après 5 bougies, donc le dernier swing n'apparaît qu'avec ce délai.")
