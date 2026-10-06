@@ -35,7 +35,7 @@ st.markdown(
     f"<div style='display:flex; align-items:baseline; gap:18px'>"
     f"<span class='num' style='font-size:48px'>{cm.fmt(last, dec)}</span>"
     f"<span class='num' style='font-size:20px; color:{col}'>{chg:+.2f}%</span>"
-    f"<span class='lbl'>{name} · {tf} · {len(zones)} zone(s) détectée(s)</span></div>",
+    f"<span class='lbl'>{name} · {tf} · {len(zones)} zone(s) active(s)</span></div>",
     unsafe_allow_html=True
 )
 
@@ -78,17 +78,21 @@ s.setData(D);
 const ts = chart.timeScale();
 ts.setVisibleLogicalRange({ from: Math.max(0, D.length - 140), to: D.length - 1 + 8 });
 
+function dims() {
+    let pw = 60, th = 28;
+    try { pw = chart.priceScale('right').width(); } catch(e) {}
+    try { th = ts.height(); } catch(e) {}
+    return [Math.max(1, el.clientWidth - pw), Math.max(1, el.clientHeight - th)];
+}
+
 function draw() {
-    const w = el.clientWidth || 800;
-    const h = el.clientHeight || 540;
+    const [w, h] = dims();
     const d = window.devicePixelRatio || 1;
 
-    if (cv.width !== w * d || cv.height !== h * d) {
-        cv.width = w * d;
-        cv.height = h * d;
-        cv.style.width = w + 'px';
-        cv.style.height = h + 'px';
-    }
+    cv.width = w * d;
+    cv.height = h * d;
+    cv.style.width = w + 'px';
+    cv.style.height = h + 'px';
 
     cx.setTransform(d, 0, 0, d, 0, 0);
     cx.clearRect(0, 0, w, h);
@@ -97,33 +101,35 @@ function draw() {
     const tEnd = D[D.length - 1].time;
 
     for (const z of Z) {
-        const x0 = ts.timeToCoordinate(z.t0);
-        const x1 = ts.timeToCoordinate(tEnd);
-        const y0 = s.priceToCoordinate(z.top);
-        const y1 = s.priceToCoordinate(z.bottom);
+        let x0 = ts.timeToCoordinate(z.t0);
+        let x1 = ts.timeToCoordinate(tEnd);
+        let yTop = s.priceToCoordinate(z.top);
+        let yBottom = s.priceToCoordinate(z.bottom);
 
-        if (y0 === null || y1 === null) continue;
+        if (yTop === null || yBottom === null) continue;
 
         const left = x0 === null ? 0 : Math.max(0, x0);
         const right = x1 === null ? w : x1;
-        if (right < 0 || left > w) continue;
+        if (right <= left) continue;
+
+        const y = Math.min(yTop, yBottom);
+        const boxH = Math.max(2, Math.abs(yBottom - yTop));
 
         const up = z.side === 'Demand';
         const c = up ? '0,214,50' : '255,59,48';
         const test = z.status === 'EN TEST';
-        const boxH = y1 - y0;
 
-        cx.fillStyle = 'rgba(' + c + ',' + (test ? 0.22 : 0.12) + ')';
-        cx.fillRect(left, y0, right - left, boxH);
+        cx.fillStyle = 'rgba(' + c + ',' + (test ? 0.25 : 0.12) + ')';
+        cx.fillRect(left, y, right - left, boxH);
 
         cx.strokeStyle = 'rgba(' + c + ', 0.9)';
         cx.setLineDash(test ? [5, 3] : []);
         cx.lineWidth = 1;
-        cx.strokeRect(left + 0.5, y0 + 0.5, right - left, boxH);
+        cx.strokeRect(left + 0.5, y + 0.5, right - left, boxH);
 
         cx.fillStyle = 'rgb(' + c + ')';
         cx.font = '600 11px Inter, sans-serif';
-        cx.fillText((up ? 'DEMAND' : 'SUPPLY') + ' ' + z.status, left + 6, Math.min(y0, y1) + 14);
+        cx.fillText((up ? 'DEMAND' : 'SUPPLY') + ' ' + z.status, left + 6, y + 13);
     }
 }
 
@@ -147,3 +153,5 @@ html = (HTML.replace("_DATA_", json.dumps(candles))
             .replace("_DEC_", str(dec)))
 
 components.html(html, height=660, scrolling=False)
+
+st.caption("Contact mèche : EN TEST pendant 10 bougies. Clôture au-delà de la boîte : zone supprimée.")
