@@ -1,4 +1,4 @@
-"""Données, moteur SMC et thème partagés par toutes les pages."""
+"""Moteur SMC institutionnel strict et partagé."""
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -44,60 +44,149 @@ def load(sym: str, tf: str) -> pd.DataFrame:
         }).dropna()
     return df
 
-def _scan(o, h, l, c, atr, n, mult=1.2, hold=10):
-    N = len(c)
-    piv_h = [i for i in range(n, N - n) if h[i] == h[i - n:i + n + 1].max()]
-    piv_l = [i for i in range(n, N - n) if l[i] == l[i - n:i + n + 1].min()]
-    out = []
-    
-    for p in piv_l:
-        for j in (p + 1, p + 2):
-            if j + 1 >= N:
-                break
-            if not (c[j] > o[j] and (c[j] - o[j]) > mult * atr[j]):
-                continue
-            if not (h[j - 1] < l[j + 1]):
-                continue
-            prev = [q for q in piv_h if q < p]
-            if not prev:
-                break
-            lvl = h[prev[-1]]
-            b = next((t for t in range(j, min(j + 20, N)) if c[t] > lvl), None)
-            if b is None:
-                break
-            
-            bottom, top = l[p], max(o[p], c[p])
-            touched, alive = None, True
-            for t in range(b + 1, N):
-                if c[t] < bottom:
-                    alive = False
-                    break
-                if touched is None and l[t] <= top:
-                    touched = t
-                if touched is not None and (t - touched) >= hold:
-                    alive = False
-                    break
-            if alive:
-                out.append((p, bottom, top, "EN TEST" if touched is not None else "ACTIVE"))
-            break
-    return out
-
-def detect(df: pd.DataFrame, n: int = 5) -> list:
-    if len(df) < 60:
+# --- DÉTECTION PURE SMC INSTITUTIONNELLE ---
+def detect(df: pd.DataFrame, swing_len: int = 6, hold: int = 10) -> list:
+    if len(df) < 50:
         return []
-    o, h, l, c = (df[k].to_numpy(float) for k in ("Open", "High", "Low", "Close"))
-    pc = np.r_[c[0], c[:-1]]
-    tr = np.maximum.reduce([h - l, np.abs(h - pc), np.abs(l - pc)])
-    atr = pd.Series(tr).ewm(alpha=1 / 14, adjust=False).mean().to_numpy()
-    ts = [int(t.timestamp()) for t in df.index]
+
+    highs = df["High"].values
+    lows = df["Low"].values
+    closes = df["Close"].values
+    opens = df["Open"].values
+    times = [int(t.timestamp()) for t in df.index]
+    N = len(closes)
+
+    # ATR 14 classique
+    tr = np.maximum(highs - lows, np.maximum(np.abs(highs - np.roll(closes, 1)), np.abs(lows - np.roll(closes, 1))))
+    atr = pd.Series(tr).rolling(14).mean().bfill().values
+
     zones = []
-    
-    for side, res in (("Demand", _scan(o, h, l, c, atr, n)), ("Supply", _scan(-o, -l, -h, -c, atr, n))):
-        for p, bot, top, status in res:
-            if side == "Supply":
-                bot, top = -top, -bot
-            zones.append(dict(side=side, t0=ts[p], bottom=float(bot), top=float(top), status=status))
-    return zones
+
+    # 1. DÉTECTION BEARISH ORDER BLOCKS (SUPPLY / VENTE)
+    for i in range(swing_len, N - 4):
+        # Le pivot doit être le plus haut sur toute la fenêtre [i - swing_len : i + swing_len]
+        win_start = max(0, i - swing_len)
+        win_end = min(N, i + swing_len + 1)
+        if highs[i] != np.max(highs[win_start:win_end]):
+            continue
+
+        # La bougie exacte du sommet ou la dernière bougie verte au sommet
+        base_idx = i
+        for k in range(i, max(0, i - 3), -1):
+            if closes[k] >= opens[k]:
+                base_idx = k
+                break
+
+        # Géométrie exacte : Mèche haute absolue du sommet
+        top_zone = float(highs[i])
+        bot_zone = float(min(opens[base_idx], closes[base_idx]))
+
+        # Validation de l'impulsion baissière en sortie de sommet
+        impulse_found = False
+        bos_found = False
+        prior_valley = np.min(lows[max(0, i - (swing_len * 2)):i])
+
+        for j in range(i + 1, min(i + 4, N)):
+            body = opens[j] - closes[j]
+            if body >= 1.0 * atr[j]:
+                impulse_found = True
+            if closes[j] < prior_valley:
+                bos_found = True
+
+        # S'il n'y a ni déplacement fort ni cassure structurelle : on rejette
+        if not (impulse_found and bos_found):
+            continue
+
+        # Vérification du cycle de vie
+        touched = None
+        alive = True
+        start_check = min(i + 3, N - 1)
+
+        for t in range(start_check, N):
+            # Clôture au-dessus du sommet = zone détruite
+            if closes[t] > top_zone:
+                alive = False
+                break
+            # Contact mèche
+            if touched is None and highs[t] >= bot_zone:
+                touched = t
+            # Règle des 10 bougies post-test
+            if touched is not None and (t - touched) > hold:
+                alive = False
+                break
+
+        if alive:
+            zones.append({
+                "side": "Supply",
+                "t0": times[base_idx],
+                "bottom": bot_zone,
+                "top": top_zone,
+                "status": "EN TEST" if touched is not None else "ACTIVE"
+            })
+
+    # 2. DÉTECTION BULLISH ORDER BLOCKS (DEMAND / ACHAT)
+    for i in range(swing_len, N - 4):
+        win_start = max(0, i - swing_len)
+        win_end = min(N, i + swing_len + 1)
+        if lows[i] != np.min(lows[win_start:win_end]):
+            continue
+
+        base_idx = i
+        for k in range(i, max(0, i - 3), -1):
+            if closes[k] <= opens[k]:
+                base_idx = k
+                break
+
+        bot_zone = float(lows[i])  # Mèche basse absolue du creux
+        top_zone = float(max(opens[base_idx], closes[base_idx]))
+
+        impulse_found = False
+        bos_found = False
+        prior_peak = np.max(highs[max(0, i - (swing_len * 2)):i])
+
+        for j in range(i + 1, min(i + 4, N)):
+            body = closes[j] - opens[j]
+            if body >= 1.0 * atr[j]:
+                impulse_found = True
+            if closes[j] > prior_peak:
+                bos_found = True
+
+        if not (impulse_found and bos_found):
+            continue
+
+        touched = None
+        alive = True
+        start_check = min(i + 3, N - 1)
+
+        for t in range(start_check, N):
+            if closes[t] < bot_zone:
+                alive = False
+                break
+            if touched is None and lows[t] <= top_zone:
+                touched = t
+            if touched is not None and (t - touched) > hold:
+                alive = False
+                break
+
+        if alive:
+            zones.append({
+                "side": "Demand",
+                "t0": times[base_idx],
+                "bottom": bot_zone,
+                "top": top_zone,
+                "status": "EN TEST" if touched is not None else "ACTIVE"
+            })
+
+    # Dédoublonnage strict par prix pour éviter les boîtes superposées
+    clean_zones = []
+    seen = set()
+    for z in reversed(zones):
+        key = (round(z["top"], 3), round(z["bottom"], 3), z["side"])
+        if key not in seen:
+            seen.add(key)
+            clean_zones.append(z)
+
+    return list(reversed(clean_zones))
 
 def fmt(v, dec):
     return f"{v:,.{dec}f}" if dec <= 2 else f"{v:.{dec}f}"
@@ -225,4 +314,3 @@ def spark(vals, color, w=120, h=36):
     return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
             f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="1.7" '
             f'stroke-linejoin="round" stroke-linecap="round"/></svg>')
-
